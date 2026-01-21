@@ -77,7 +77,6 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
     </html>
     """
 
-# 修复版 get_monthly_data (解决 duplicate axis 错误)
 def get_monthly_data(table_name, dim_table, dim_id_col, dim_name_col, forest_id, target_date, record_type, value_cols):
     if not supabase: return pd.DataFrame()
     
@@ -86,7 +85,6 @@ def get_monthly_data(table_name, dim_table, dim_id_col, dim_name_col, forest_id,
     df_dims = pd.DataFrame(dims)
     if df_dims.empty: return pd.DataFrame()
     
-    # 兼容处理
     if dim_name_col not in df_dims.columns and 'activity_name' in df_dims.columns:
         df_dims[dim_name_col] = df_dims['activity_name']
 
@@ -98,26 +96,21 @@ def get_monthly_data(table_name, dim_table, dim_id_col, dim_name_col, forest_id,
     
     # 3. 合并
     if df_facts.empty:
-        # 如果没有事实数据，直接用维度表
         cols_to_keep = ['id', dim_name_col]
         if 'grade_code' in df_dims.columns: cols_to_keep.append('grade_code')
-        
         df_merged = df_dims[cols_to_keep].rename(columns={'id': dim_id_col})
         for c in value_cols: df_merged[c] = 0.0
     else:
-        # 正常合并
         df_merged = pd.merge(df_dims, df_facts, left_on='id', right_on=dim_id_col, how='left')
         for c in value_cols: df_merged[c] = df_merged[c].fillna(0.0)
     
-    # 关键修复: 重置索引并去重，防止 'cannot reindex on duplicate axis' 错误
     df_merged = df_merged.loc[:, ~df_merged.columns.duplicated()]
     df_merged = df_merged.reset_index(drop=True)
 
-    # 补充默认字段
     if 'market' not in df_merged.columns and 'grade_code' in df_merged.columns:
         df_merged['market'] = df_merged['grade_code'].apply(lambda x: 'Domestic' if 'Domestic' in str(x) else 'Export')
     if 'customer' not in df_merged.columns:
-        df_merged['customer'] = 'FCO' # Default
+        df_merged['customer'] = 'FCO' 
         
     return df_merged
 
@@ -137,6 +130,99 @@ def save_monthly_data(edited_df, table_name, dim_id_col, forest_id, target_date,
         supabase.table(table_name).upsert(records, on_conflict=f"forest_id,{dim_id_col},month,record_type").execute()
         return True
     except: return False
+
+# --- 页面 0: Dashboard (已修复，内容回归) ---
+def page_dashboard():
+    st.title("📊 Executive Dashboard")
+    
+    forests = get_forest_list()
+    if not forests: st.warning("Loading Data..."); return
+    
+    c1, c2 = st.columns([2, 1])
+    with c1: sel_forest = st.selectbox("Forest", ["ALL"] + [f['name'] for f in forests])
+    with c2: sel_year = st.selectbox("Year", [2025, 2026])
+    
+    # 拉取 YTD 数据
+    try:
+        # 1. 收入
+        q_vol = supabase.table("fact_production_volume").select("*").eq("record_type", "Actual")
+        if sel_forest != "ALL":
+            fid = next(f['id'] for f in forests if f['name'] == sel_forest)
+            q_vol = q_vol.eq("forest_id", fid)
+        vol_data = q_vol.execute().data
+        df_vol = pd.DataFrame(vol_data)
+
+        # 2. 成本
+        q_cost = supabase.table("fact_operational_costs").select("*").eq("record_type", "Actual")
+        if sel_forest != "ALL":
+            q_cost = q_cost.eq("forest_id", fid)
+        cost_data = q_cost.execute().data
+        df_cost = pd.DataFrame(cost_data)
+
+        # 预处理
+        rev = 0
+        cost = 0
+        if not df_vol.empty:
+            df_vol['month'] = pd.to_datetime(df_vol['month'])
+            df_vol = df_vol[df_vol['month'].dt.year == sel_year]
+            rev = df_vol['amount'].sum()
+        
+        if not df_cost.empty:
+            df_cost['month'] = pd.to_datetime(df_cost['month'])
+            df_cost = df_cost[df_cost['month'].dt.year == sel_year]
+            cost = df_cost['total_amount'].sum()
+            
+        margin = rev - cost
+
+        # KPI 卡片
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total Revenue", f"${rev:,.0f}")
+        k2.metric("Total Costs", f"${cost:,.0f}")
+        k3.metric("Net Profit", f"${margin:,.0f}", delta=f"{(margin/rev*100) if rev else 0:.1f}%")
+
+        st.divider()
+
+        # 图表
+        col_chart1, col_chart2 = st.columns(2)
+        
+        with col_chart1:
+            st.subheader("Monthly P&L Trend")
+            if not df_vol.empty or not df_cost.empty:
+                v_m = df_vol.groupby('month')['amount'].sum().reset_index() if not df_vol.empty else pd.DataFrame()
+                c_m = df_cost.groupby('month')['total_amount'].sum().reset_index() if not df_cost.empty else pd.DataFrame()
+                
+                if not v_m.empty: v_m.rename(columns={'amount': 'Revenue'}, inplace=True)
+                if not c_m.empty: c_m.rename(columns={'total_amount': 'Costs'}, inplace=True)
+
+                if not v_m.empty and not c_m.empty:
+                    merged = pd.merge(v_m, c_m, on='month', how='outer').fillna(0)
+                elif not v_m.empty:
+                    merged = v_m.assign(Costs=0)
+                else:
+                    merged = c_m.assign(Revenue=0)
+                
+                if not merged.empty:
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(x=merged['month'], y=merged.get('Revenue',0), name='Revenue', marker_color='#27AE60'))
+                    fig.add_trace(go.Bar(x=merged['month'], y=merged.get('Costs',0), name='Costs', marker_color='#C0392B'))
+                    st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No data available yet.")
+
+        with col_chart2:
+            st.subheader("Cost Breakdown")
+            if not df_cost.empty:
+                acts = pd.DataFrame(supabase.table("dim_cost_activities").select("*").execute().data)
+                if not acts.empty:
+                    merged_cost = pd.merge(df_cost, acts, left_on='activity_id', right_on='id')
+                    fig2 = px.pie(merged_cost, values='total_amount', names='category', hole=0.4)
+                    st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info("No cost data.")
+
+    except Exception as e:
+        st.error(f"Error loading dashboard: {e}")
+
 
 # --- 页面 1: Log Sales Data ---
 def page_log_sales():
@@ -209,7 +295,6 @@ def page_monthly_input(mode):
 
     st.markdown(f"**Editing:** {sel_forest} | {target_date}")
     
-    # 调整 Tab 顺序: Budget 模式下 Detailed Forecast 在最左侧
     if mode == "Budget":
         tabs = ["📋 Sales Forecast (Detailed)", "🚛 Log Transport & Volume", "💰 Operational & Harvesting"]
     else:
@@ -217,14 +302,8 @@ def page_monthly_input(mode):
         
     current_tabs = st.tabs(tabs)
 
-    # --- Tab Logic ---
-    # Helper to check active tab
-    def is_tab(name): return name in tabs and tabs.index(name) == i 
-
     for i, tab_name in enumerate(tabs):
         with current_tabs[i]:
-            
-            # --- 1. Detailed Forecast (Budget Only) ---
             if tab_name == "📋 Sales Forecast (Detailed)":
                 st.info("Detailed Sales Budget - Format mimics Log Sales Data")
                 df = get_monthly_data("fact_production_volume", "dim_products", "grade_id", "grade_code", fid, target_date, mode, ['vol_tonnes', 'vol_jas', 'price_jas', 'amount'])
@@ -243,7 +322,6 @@ def page_monthly_input(mode):
                     "amount": st.column_config.NumberColumn("Revenue", format="$%.0f"),
                 }
                 cols_order = ['grade_id', 'grade_code', 'market', 'customer', 'vol_tonnes', 'conversion_factor', 'vol_jas', 'price_jas', 'amount']
-                # 确保列存在再排序
                 safe_cols = [c for c in cols_order if c in df_detail.columns]
                 df_detail = df_detail[safe_cols]
                 
@@ -253,7 +331,6 @@ def page_monthly_input(mode):
                     if save_monthly_data(edited_detail, "fact_production_volume", "grade_id", fid, target_date, mode): 
                         st.success("Detailed Forecast Saved!")
 
-            # --- 2. Log Transport & Volume ---
             elif tab_name == "🚛 Log Transport & Volume":
                 st.info("Base Volume/JAS for Transport calculations.")
                 df = get_monthly_data("fact_production_volume", "dim_products", "grade_id", "grade_code", fid, target_date, mode, ['vol_tonnes', 'vol_jas', 'price_jas', 'amount'])
@@ -262,7 +339,6 @@ def page_monthly_input(mode):
                 if st.button("Save Volume", key=f"b1_{mode}"):
                     if save_monthly_data(edited, "fact_production_volume", "grade_id", fid, target_date, mode): st.success("Saved!")
 
-            # --- 3. Operational & Harvesting ---
             elif tab_name == "💰 Operational & Harvesting":
                 st.info("Harvesting & Ops Costs.")
                 df = get_monthly_data("fact_operational_costs", "dim_cost_activities", "activity_id", "activity_name", fid, target_date, mode, ['quantity', 'unit_rate', 'total_amount'])
@@ -271,7 +347,7 @@ def page_monthly_input(mode):
                 if st.button("Save Costs", key=f"b2_{mode}"):
                     if save_monthly_data(edited, "fact_operational_costs", "activity_id", fid, target_date, mode): st.success("Saved!")
 
-# --- 页面 4: Analysis ---
+# --- 页面 4: Analysis & Invoice (对比分析 + 发票) ---
 def page_analysis_invoice():
     st.title("📈 Analysis & Invoicing")
     forests = get_forest_list()
@@ -285,12 +361,45 @@ def page_analysis_invoice():
     fid = next(f['id'] for f in forests if f['name'] == sel_forest)
     target_date = f"{year}-{MONTH_MAP[month_str]:02d}-01"
 
+    # --- Part 1: 对比分析 (回归!) ---
+    st.subheader(f"📊 Budget vs Actual ({month_str} {year})")
+    
     try:
-        act_costs = supabase.table("fact_operational_costs").select("*").eq("forest_id", fid).eq("month", target_date).eq("record_type", "Actual").execute().data
-        total_act_cost = sum([x['total_amount'] for x in act_costs]) if act_costs else 0
-    except: total_act_cost = 0
+        # 获取成本
+        act_costs = supabase.table("fact_operational_costs").select("total_amount").eq("forest_id", fid).eq("month", target_date).eq("record_type", "Actual").execute().data
+        bud_costs = supabase.table("fact_operational_costs").select("total_amount").eq("forest_id", fid).eq("month", target_date).eq("record_type", "Budget").execute().data
+        
+        # 获取收入
+        act_revs = supabase.table("fact_production_volume").select("amount").eq("forest_id", fid).eq("month", target_date).eq("record_type", "Actual").execute().data
+        bud_revs = supabase.table("fact_production_volume").select("amount").eq("forest_id", fid).eq("month", target_date).eq("record_type", "Budget").execute().data
 
-    st.subheader(f"Invoice Generation ({month_str} {year})")
+        total_act_cost = sum([x['total_amount'] for x in act_costs]) if act_costs else 0
+        total_bud_cost = sum([x['total_amount'] for x in bud_costs]) if bud_costs else 0
+        total_act_rev = sum([x['amount'] for x in act_revs]) if act_revs else 0
+        total_bud_rev = sum([x['amount'] for x in bud_revs]) if bud_revs else 0
+        
+        # 显示指标
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Revenue", f"${total_act_rev:,.0f}", delta=f"${total_act_rev - total_bud_rev:,.0f} vs Budget")
+        k2.metric("Costs", f"${total_act_cost:,.0f}", delta=f"${total_bud_cost - total_act_cost:,.0f} (vs Budget)", delta_color="inverse")
+        k3.metric("Net Profit", f"${total_act_rev - total_act_cost:,.0f}")
+
+        # 显示对比图
+        fig = go.Figure(data=[
+            go.Bar(name='Budget', x=['Revenue', 'Costs'], y=[total_bud_rev, total_bud_cost], marker_color='#A9DFBF'),
+            go.Bar(name='Actual', x=['Revenue', 'Costs'], y=[total_act_rev, total_act_cost], marker_color='#2874A6')
+        ])
+        fig.update_layout(barmode='group', height=300, margin=dict(l=20, r=20, t=30, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error loading analysis: {e}")
+        total_act_cost = 0 # Fallback
+
+    st.divider()
+
+    # --- Part 2: 发票生成 ---
+    st.subheader(f"📑 Invoice Generator")
     col_input, col_preview = st.columns([1, 2])
     with col_input:
         bill_to = st.text_input("Bill To", "CFG Forestry Group")
@@ -368,7 +477,7 @@ def page_invoice_bot():
 # --- 主导航 ---
 st.sidebar.title("🌲 FCO Cloud ERP")
 pages = {
-    "Dashboard": lambda: st.info("Dashboard Placeholder"), # Replace with full dashboard function if needed
+    "Dashboard": page_dashboard,
     "1. Log Sales Data": page_log_sales,
     "2. Budget Planning": lambda: page_monthly_input("Budget"),
     "3. Actuals Entry": lambda: page_monthly_input("Actual"),
