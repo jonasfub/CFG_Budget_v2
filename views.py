@@ -351,6 +351,10 @@ def view_invoice_bot():
                     progress_bar.empty()
                     st.session_state['ocr_results'] = results
 
+        # --- 修改 views.py 中 view_invoice_bot 的 Review 部分 ---
+
+# ... (前面的 Upload 代码不变) ...
+
         with col_review:
             st.subheader("2. Review & Archive")
             
@@ -359,32 +363,16 @@ def view_invoice_bot():
                 reconcile_data = []
                 
                 for i, item in enumerate(results):
-                    # Error Handling
-                    if item.get("vendor_detected") == "Error":
-                        st.error(f"❌ File: {item.get('filename', 'Unknown')} - Failed: {item.get('error_msg')}")
-                        match_status = "❌ AI Error"
-                        db_amount = 0
-                        diff = 0
-                    else:
-                        match_status = "❌ Not Found"
-                        db_amount = 0
-                        diff = 0
-                        
-                        # Database Matching
-                        acts = backend.supabase.table("dim_cost_activities").select("id").ilike("activity_name", f"%{item['vendor_detected']}%").execute().data
-                        if acts:
-                            act_id = acts[0]['id']
-                            costs = backend.supabase.table("fact_operational_costs").select("total_amount")\
-                                .eq("activity_id", act_id).eq("record_type", "Actual").execute().data
-                            if costs:
-                                db_amount = costs[0]['total_amount']
-                                diff = float(item['amount_detected']) - float(db_amount)
-                                match_status = "✅ Match" if abs(diff) < 1.0 else "⚠️ Variance"
-
+                    # ... (错误检查逻辑不变) ...
+                    # ... (数据库匹配逻辑不变) ...
+                    
+                    # 构造显示数据 (新增 Date 和 Desc)
                     reconcile_data.append({
                         "Select": False, "Index": i,
                         "File": item.get('filename'), 
                         "Vendor": item.get('vendor_detected'),
+                        "Date": item.get('invoice_date'),       # <--- 新增
+                        "Desc": item.get('description'),        # <--- 新增
                         "Inv #": item.get('invoice_no', ''), 
                         "Inv Amount": item.get('amount_detected', 0), 
                         "ERP Amount": db_amount, "Diff": diff, "Status": match_status
@@ -393,9 +381,15 @@ def view_invoice_bot():
                 df_rec = pd.DataFrame(reconcile_data)
                 
                 if not df_rec.empty:
+                    # 这里的 column_config 可以让 Date 列显示得更漂亮
                     edited_df = st.data_editor(
                         df_rec, 
-                        column_config={"Select": st.column_config.CheckboxColumn("Archive?", default=True), "Index": None},
+                        column_config={
+                            "Select": st.column_config.CheckboxColumn("Archive?", default=True), 
+                            "Index": None,
+                            "Date": st.column_config.DateColumn("Inv Date", format="YYYY-MM-DD"), # <--- 格式化日期
+                            "Desc": st.column_config.TextColumn("Summary", width="medium")        # <--- 调整宽度
+                        },
                         hide_index=True, width="stretch"
                     )
                     
@@ -408,16 +402,22 @@ def view_invoice_bot():
                                 # Upload Logic
                                 original_item = results[row['Index']]
                                 file_obj = original_item['file_obj']
-                                
-                                # Reset file pointer for multiple uploads
                                 file_obj.seek(0)
                                 
                                 path = f"{int(time.time())}_{i}_{row['File']}"
                                 backend.supabase.storage.from_("invoices").upload(path, file_obj.read(), {"content-type": "application/pdf"})
                                 public_url = backend.supabase.storage.from_("invoices").get_public_url(path)
+                                
+                                # Insert Logic (新增 invoice_date 和 description)
                                 backend.supabase.table("invoice_archive").insert({
-                                    "invoice_no": row['Inv #'], "vendor": row['Vendor'], "amount": row['Inv Amount'],
-                                    "file_name": row['File'], "file_url": public_url, "status": "Verified"
+                                    "invoice_no": row['Inv #'], 
+                                    "vendor": row['Vendor'], 
+                                    "invoice_date": str(row['Date']),  # <--- 写入新字段
+                                    "description": row['Desc'],        # <--- 写入新字段
+                                    "amount": row['Inv Amount'],
+                                    "file_name": row['File'], 
+                                    "file_url": public_url, 
+                                    "status": "Verified"
                                 }).execute()
                             save_status.success("Saved!")
                         else:

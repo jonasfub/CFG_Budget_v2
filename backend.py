@@ -88,7 +88,6 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
 def real_extract_invoice_data(file_obj):
     try:
         if not check_google_key():
-            # 为了兼容列表格式，这里返回由一个错误对象组成的列表
             return [{"vendor_detected": "Error", "error_msg": "API Key missing", "amount_detected": 0, "filename": file_obj.name}]
 
         # 1. 配置 & 模型选择
@@ -102,30 +101,28 @@ def real_extract_invoice_data(file_obj):
         file_obj.seek(0)
         file_bytes = file_obj.read()
         
-        # 3. 构建 Prompt (关键修改：要求返回数组 Array)
+        # 3. 构建 Prompt (新增 description 和 invoice_date)
         prompt_text = """
-        Analyze this PDF file. It contains MULTIPLE distinct invoices (potentially on different pages).
+        Analyze this PDF file. It contains MULTIPLE distinct invoices.
         Extract ALL invoices found into a single JSON ARRAY.
         
-        Output format must be a list of objects:
+        For each invoice, summarize the work done into a short "description" (e.g., "Road Maintenance", "Aerial Photography", "Log Transport").
+        
+        Output format:
         [
             {
                 "vendor_detected": "Company A",
                 "invoice_no": "INV-001",
-                "date_detected": "2025-12-22",
-                "amount_detected": 1000.00
-            },
-            {
-                "vendor_detected": "Company B",
-                "invoice_no": "INV-002",
-                "date_detected": "2025-12-30",
-                "amount_detected": 500.50
+                "invoice_date": "YYYY-MM-DD", 
+                "amount_detected": 1000.00,
+                "description": "Brief summary of the service provided"
             }
         ]
         
         Important:
         1. Scan ALL pages.
-        2. Return ONLY the JSON ARRAY. No markdown code blocks.
+        2. Format dates as YYYY-MM-DD.
+        3. Return ONLY the JSON ARRAY.
         """
         
         # 4. 调用 AI
@@ -136,8 +133,6 @@ def real_extract_invoice_data(file_obj):
         
         # 5. 解析结果
         raw_text = response.text
-        
-        # 关键修改：寻找方括号 [] 包裹的内容，而不是花括号 {}
         match = re.search(r'\[.*\]', raw_text, re.DOTALL)
         
         final_results = []
@@ -146,24 +141,21 @@ def real_extract_invoice_data(file_obj):
             json_str = match.group(0)
             try:
                 data_list = json.loads(json_str)
-                
-                # 如果 AI 依然只返回了一个字典对象而不是列表，手动包一层
-                if isinstance(data_list, dict):
-                    data_list = [data_list]
+                if isinstance(data_list, dict): data_list = [data_list]
                     
-                # 遍历列表，清洗每一个发票的数据
                 for item in data_list:
-                    # 确保是字典
                     if not isinstance(item, dict): continue
                     
-                    item['filename'] = file_obj.name # 标记来源文件
+                    item['filename'] = file_obj.name
                     
-                    # 容错处理
+                    # 容错与默认值填充
                     if "amount_detected" not in item: item["amount_detected"] = 0.0
                     if "invoice_no" not in item: item["invoice_no"] = "Unknown"
                     if "vendor_detected" not in item: item["vendor_detected"] = "Unknown"
+                    if "invoice_date" not in item: item["invoice_date"] = str(date.today()) # 如果没读到日期，暂填今天
+                    if "description" not in item: item["description"] = "N/A"
                     
-                    # 金额转 Float
+                    # 金额清洗
                     if isinstance(item["amount_detected"], str):
                         clean_amt = item["amount_detected"].replace('$','').replace(',','').strip()
                         try: item["amount_detected"] = float(clean_amt)
@@ -180,7 +172,6 @@ def real_extract_invoice_data(file_obj):
 
     except Exception as e:
         return [{"filename": file_obj.name, "vendor_detected": "Error", "error_msg": str(e), "amount_detected": 0}]
-
 
 
 # --- F 在 backend.py 添加这个调试函数
