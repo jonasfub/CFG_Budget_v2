@@ -92,13 +92,13 @@ def real_extract_invoice_data(file_obj):
         genai.configure(api_key=st.secrets["google"]["api_key"])
         
        # --- 修改开始 ---
-        # 尝试使用更具体的模型名称，这通常能解决 404 错误
-        # 备选方案: 'gemini-1.5-flash-001' 或 'gemini-1.5-flash-latest'
+        # 尝试使用具体版本号，兼容性更好
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash-latest') 
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
         except:
-            # 如果 Flash 依然失败，回退到 Pro (成本稍高但兼容性最好)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            # 如果失败，尝试回退到 standard flash 或 pro
+            model = genai.GenerativeModel('gemini-1.5-flash-001')
+
         # --- 修改结束 ---
         
         # 3. 读取文件
