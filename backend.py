@@ -181,3 +181,31 @@ def list_available_models():
     for m in genai.list_models():
         if 'generateContent' in m.supported_generation_methods:
             print(m.name) # 这会在 Streamlit 的后台 Logs 里打印出来的模型列表
+
+
+# --- G - GL Mapping Logic ---
+def get_gl_mapping(forest_id):
+    """
+    获取指定林地的 GL 映射表，返回两个字典：
+    1. cost_map: {activity_id: {'code': 'GLxxx', 'name': 'Desc'}}
+    2. rev_map:  {grade_id:    {'code': 'GLxxx', 'name': 'Desc'}}
+    """
+    if not supabase: return {}, {}
+    
+    try:
+        data = supabase.table("dim_gl_mappings").select("*").eq("forest_id", forest_id).execute().data
+        
+        cost_map = {}
+        rev_map = {}
+        
+        for row in data:
+            info = {'code': row['gl_code'], 'name': row['gl_name']}
+            if row['item_type'] == 'Cost':
+                cost_map[row['item_id']] = info
+            elif row['item_type'] == 'Revenue':
+                rev_map[row['item_id']] = info
+                
+        return cost_map, rev_map
+    except Exception as e:
+        print(f"Mapping Error: {e}")
+        return {}, {}
