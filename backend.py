@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-import google.generativeai as genai
+from google import genai            # <--- 新版导入方式
+from google.genai import types      # <--- 引入类型支持
 import json
 import time
 
@@ -17,17 +18,12 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- B. Google AI 配置 ---
-def init_gemini():
-    try:
-        if "google" in st.secrets:
-            genai.configure(api_key=st.secrets["google"]["api_key"])
-            return True
-    except:
-        return False
-    return False
+# --- B. Google AI 检查 ---
+def check_google_key():
+    # 检查 secrets 是否存在
+    return "google" in st.secrets and "api_key" in st.secrets["google"]
 
-# --- C. 核心数据函数 ---
+# --- C. 核心数据函数 (保持不变) ---
 def get_forest_list():
     if not supabase: return []
     try:
@@ -37,7 +33,6 @@ def get_forest_list():
 def get_monthly_data(table_name, dim_table, dim_id_col, dim_name_col, forest_id, target_date, record_type, value_cols):
     if not supabase: return pd.DataFrame()
     
-    # 1. 维度
     dims = supabase.table(dim_table).select("*").execute().data
     df_dims = pd.DataFrame(dims)
     if df_dims.empty: return pd.DataFrame()
@@ -45,13 +40,11 @@ def get_monthly_data(table_name, dim_table, dim_id_col, dim_name_col, forest_id,
     if dim_name_col not in df_dims.columns and 'activity_name' in df_dims.columns:
         df_dims[dim_name_col] = df_dims['activity_name']
 
-    # 2. 数据
     try:
         res = supabase.table(table_name).select("*").eq("forest_id", forest_id).eq("record_type", record_type).eq("month", target_date).execute()
         df_facts = pd.DataFrame(res.data)
     except: df_facts = pd.DataFrame()
     
-    # 3. 合并与清理
     if df_facts.empty:
         cols_to_keep = ['id', dim_name_col]
         if 'grade_code' in df_dims.columns: cols_to_keep.append('grade_code')
@@ -61,11 +54,9 @@ def get_monthly_data(table_name, dim_table, dim_id_col, dim_name_col, forest_id,
         df_merged = pd.merge(df_dims, df_facts, left_on='id', right_on=dim_id_col, how='left')
         for c in value_cols: df_merged[c] = df_merged[c].fillna(0.0)
     
-    # 去重与索引重置 (防止 pandas 报错)
     df_merged = df_merged.loc[:, ~df_merged.columns.duplicated()]
     df_merged = df_merged.reset_index(drop=True)
 
-    # 补充默认字段
     if 'market' not in df_merged.columns and 'grade_code' in df_merged.columns:
         df_merged['market'] = df_merged['grade_code'].apply(lambda x: 'Domestic' if 'Domestic' in str(x) else 'Export')
     if 'customer' not in df_merged.columns:
@@ -125,47 +116,57 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
     </html>
     """
 
-# --- E. AI 识别核心逻辑 (修复版) ---
+# --- E. AI 识别核心逻辑 (新版 SDK 实现) ---
 def real_extract_invoice_data(file_obj):
     try:
-        # 1. 配置模型
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 1. 检查 Key
+        if not check_google_key():
+            return {"vendor_detected": "Error", "error": "API Key missing", "amount_detected": 0, "filename": file_obj.name}
+
+        # 2. 初始化客户端 (新版写法)
+        client = genai.Client(api_key=st.secrets["google"]["api_key"])
         
-        # 2. 读取文件
-        file_obj.seek(0) # 确保从头读取
+        # 3. 读取文件
+        file_obj.seek(0)
         file_bytes = file_obj.read()
         
-        # 3. 发送指令
-        prompt = """
+        # 4. 构建 Prompt
+        prompt_text = """
         Analyze this invoice PDF. Extract into JSON:
         1. "vendor_detected": Company name.
         2. "invoice_no": Invoice number.
         3. "date_detected": YYYY-MM-DD.
         4. "amount_detected": Total numeric amount.
-        
-        Return ONLY valid JSON. Do not include markdown formatting like ```json.
+        Return ONLY valid JSON.
         """
         
-        response = model.generate_content([{'mime_type': 'application/pdf', 'data': file_bytes}, prompt])
+        # 5. 调用 AI (新版写法：使用 contents 列表包含 Parts)
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=[
+                types.Content(
+                    parts=[
+                        types.Part.from_bytes(data=file_bytes, mime_type='application/pdf'),
+                        types.Part.from_text(text=prompt_text)
+                    ]
+                )
+            ]
+        )
         
-        # 4. 解析结果
+        # 6. 解析结果
         text_response = response.text.strip()
-        # 清理可能存在的 markdown 符号
         if text_response.startswith("```"):
             text_response = text_response.split("```")[1].strip()
         if text_response.startswith("json"): 
             text_response = text_response[4:].strip()
         
         data = json.loads(text_response)
-        
-        # 成功时：添加文件名
         data['filename'] = file_obj.name
         return data
 
     except Exception as e:
-        # 失败时：也要返回文件名！(之前就是漏了这里)
         return {
-            "filename": file_obj.name,   # <--- 关键修复：补上文件名
+            "filename": file_obj.name,
             "vendor_detected": "Error", 
             "invoice_no": "Error",
             "date_detected": "",

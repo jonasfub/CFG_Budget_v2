@@ -5,13 +5,12 @@ import plotly.graph_objects as go
 import streamlit.components.v1 as components
 from datetime import date
 import time
-import backend  # 必须确保 backend.py 在同一目录下
+import backend 
 
-# 全局常量
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 MONTH_MAP = {m: i+1 for i, m in enumerate(MONTHS)}
 
-# --- View 1: Dashboard (仪表盘) ---
+# --- View 1: Dashboard ---
 def view_dashboard():
     st.title("📊 Executive Dashboard")
     
@@ -20,16 +19,13 @@ def view_dashboard():
         st.warning("正在连接数据库或数据库为空...")
         return
     
-    # 顶部筛选
     c1, c2 = st.columns([2, 1])
     with c1: 
         sel_forest = st.selectbox("Forest", ["ALL"] + [f['name'] for f in forests])
     with c2: 
         sel_year = st.selectbox("Year", [2025, 2026])
     
-    # 拉取数据
     try:
-        # 1. 收入 (Volume)
         q_vol = backend.supabase.table("fact_production_volume").select("*").eq("record_type", "Actual")
         if sel_forest != "ALL":
             fid = next(f['id'] for f in forests if f['name'] == sel_forest)
@@ -37,21 +33,17 @@ def view_dashboard():
         vol_data = q_vol.execute().data
         df_vol = pd.DataFrame(vol_data)
 
-        # 2. 成本 (Costs)
         q_cost = backend.supabase.table("fact_operational_costs").select("*").eq("record_type", "Actual")
         if sel_forest != "ALL":
-            # 注意: 如果上面已经筛选了fid, 这里直接用
             if 'fid' in locals():
                 q_cost = q_cost.eq("forest_id", fid)
             else:
-                 # 重新获取fid (针对仅 costs 有数据的情况)
                  fid = next(f['id'] for f in forests if f['name'] == sel_forest)
                  q_cost = q_cost.eq("forest_id", fid)
 
         cost_data = q_cost.execute().data
         df_cost = pd.DataFrame(cost_data)
 
-        # 数据预处理
         rev = 0
         cost = 0
         
@@ -67,7 +59,6 @@ def view_dashboard():
             
         margin = rev - cost
 
-        # KPI 卡片
         k1, k2, k3 = st.columns(3)
         k1.metric("Total Revenue", f"${rev:,.0f}")
         k2.metric("Total Costs", f"${cost:,.0f}")
@@ -75,7 +66,6 @@ def view_dashboard():
 
         st.divider()
 
-        # 图表区域
         col_chart1, col_chart2 = st.columns(2)
         
         with col_chart1:
@@ -98,7 +88,8 @@ def view_dashboard():
                     fig = go.Figure()
                     fig.add_trace(go.Bar(x=merged['month'], y=merged.get('Revenue',0), name='Revenue', marker_color='#27AE60'))
                     fig.add_trace(go.Bar(x=merged['month'], y=merged.get('Costs',0), name='Costs', marker_color='#C0392B'))
-                    st.plotly_chart(fig, use_container_width=True)
+                    # 修复：使用 width="stretch"
+                    st.plotly_chart(fig, width="stretch")
             else:
                 st.info("No data available yet.")
 
@@ -110,7 +101,8 @@ def view_dashboard():
                     if not acts.empty:
                         merged_cost = pd.merge(df_cost, acts, left_on='activity_id', right_on='id')
                         fig2 = px.pie(merged_cost, values='total_amount', names='category', hole=0.4)
-                        st.plotly_chart(fig2, use_container_width=True)
+                        # 修复：使用 width="stretch"
+                        st.plotly_chart(fig2, width="stretch")
                 except:
                     st.info("Could not load categories.")
             else:
@@ -120,7 +112,7 @@ def view_dashboard():
         st.error(f"Error loading dashboard: {e}")
 
 
-# --- View 2: Log Sales (销售流水) ---
+# --- View 2: Log Sales ---
 def view_log_sales():
     st.title("🚛 Log Sales Data (Transaction Level)")
     
@@ -132,22 +124,18 @@ def view_log_sales():
         sel_forest = st.selectbox("Forest", [f['name'] for f in forests])
     fid = next(f['id'] for f in forests if f['name'] == sel_forest)
     
-    # 获取产品列表
     products = backend.supabase.table("dim_products").select("*").execute().data
     product_codes = [p['grade_code'] for p in products] if products else []
     
-    # 获取现有流水
     res = backend.supabase.table("actual_sales_transactions").select("*").eq("forest_id", fid).order("date", desc=True).limit(50).execute()
     df = pd.DataFrame(res.data)
     
     if df.empty: 
-        # 初始化空行
         df = pd.DataFrame([{
             "date": date.today(), "ticket_number": "", "customer": "C001", "market": "Export",
             "grade_code": "A", "net_tonnes": 0.0, "jas": 0.0, "conversion_factor": 0.0, "price": 0.0, "total_value": 0.0
         }])
     else:
-        # 自动计算转换率用于显示
         df['conversion_factor'] = df.apply(lambda x: x['jas']/x['net_tonnes'] if x['net_tonnes']>0 else 0, axis=1)
 
     col_cfg = {
@@ -164,7 +152,8 @@ def view_log_sales():
         "total_value": st.column_config.NumberColumn("Total ($)", format="$%.2f"),
     }
     
-    edited = st.data_editor(df, key="log_sales", num_rows="dynamic", use_container_width=True, column_config=col_cfg)
+    # 修复：使用 width="stretch"
+    edited = st.data_editor(df, key="log_sales", num_rows="dynamic", width="stretch", column_config=col_cfg)
     
     if st.button("💾 Save Transactions"):
         recs = []
@@ -184,7 +173,7 @@ def view_log_sales():
         except Exception as e: st.error(f"Error: {e}")
 
 
-# --- View 3: Monthly Input (月度录入) ---
+# --- View 3: Monthly Input ---
 def view_monthly_input(mode):
     st.title(f"📝 {mode} Planning")
     forests = backend.get_forest_list()
@@ -198,7 +187,6 @@ def view_monthly_input(mode):
     target_date = f"{year}-{MONTH_MAP[month_str]:02d}-01"
     fid = next(f['id'] for f in forests if f['name'] == sel_forest)
     
-    # 预算模式下显示销售预测 Tab
     if mode == "Budget":
         tabs = ["📋 Sales Forecast (Detailed)", "🚛 Log Transport & Volume", "💰 Operational & Harvesting"]
     else:
@@ -209,7 +197,6 @@ def view_monthly_input(mode):
     for i, tab_name in enumerate(tabs):
         with current_tabs[i]:
             
-            # --- Tab: Sales Forecast (Detailed) ---
             if tab_name == "📋 Sales Forecast (Detailed)":
                 df = backend.get_monthly_data("fact_production_volume", "dim_products", "grade_id", "grade_code", fid, target_date, mode, ['vol_tonnes', 'vol_jas', 'price_jas', 'amount'])
                 
@@ -231,38 +218,40 @@ def view_monthly_input(mode):
                 safe_cols = [c for c in cols_order if c in df_detail.columns]
                 df_detail = df_detail[safe_cols]
                 
-                edited_detail = st.data_editor(df_detail, key=f"d_{mode}_{target_date}", hide_index=True, use_container_width=True, column_config=detail_cfg)
+                # 修复：使用 width="stretch"
+                edited_detail = st.data_editor(df_detail, key=f"d_{mode}_{target_date}", hide_index=True, width="stretch", column_config=detail_cfg)
                 
                 if st.button("Save Forecast", key=f"b_detail_{mode}"):
                     if backend.save_monthly_data(edited_detail, "fact_production_volume", "grade_id", fid, target_date, mode): 
                         st.success("Detailed Forecast Saved!")
 
-            # --- Tab: Transport & Volume ---
             elif tab_name == "🚛 Log Transport & Volume":
                  df = backend.get_monthly_data("fact_production_volume", "dim_products", "grade_id", "grade_code", fid, target_date, mode, ['vol_tonnes', 'vol_jas', 'price_jas', 'amount'])
                  
                  cfg = {"grade_id": None, "grade_code": st.column_config.TextColumn("Grade", disabled=True)}
-                 edited = st.data_editor(df, key=f"v_{mode}_{target_date}", hide_index=True, use_container_width=True, column_config=cfg)
+                 # 修复：使用 width="stretch"
+                 edited = st.data_editor(df, key=f"v_{mode}_{target_date}", hide_index=True, width="stretch", column_config=cfg)
                  
                  if st.button("Save Volume", key=f"b1_{mode}"):
                      if backend.save_monthly_data(edited, "fact_production_volume", "grade_id", fid, target_date, mode): st.success("Saved!")
 
-            # --- Tab: Operational & Harvesting ---
             elif tab_name == "💰 Operational & Harvesting":
                  df = backend.get_monthly_data("fact_operational_costs", "dim_cost_activities", "activity_id", "activity_name", fid, target_date, mode, ['quantity', 'unit_rate', 'total_amount'])
                  
                  cfg = {"activity_id": None, "activity_name": st.column_config.TextColumn("Activity", disabled=True)}
-                 edited = st.data_editor(df, key=f"c_{mode}_{target_date}", hide_index=True, use_container_width=True, column_config=cfg)
+                 # 修复：使用 width="stretch"
+                 edited = st.data_editor(df, key=f"c_{mode}_{target_date}", hide_index=True, width="stretch", column_config=cfg)
                  
                  if st.button("Save Costs", key=f"b2_{mode}"):
                      if backend.save_monthly_data(edited, "fact_operational_costs", "activity_id", fid, target_date, mode): st.success("Saved!")
 
 
-# --- View 4: Analysis & Invoice (分析与发票) ---
+# --- View 4: Analysis & Invoice ---
 def view_analysis_invoice():
     st.title("📈 Analysis & Invoicing")
     
     forests = backend.get_forest_list()
+    supabase = backend.supabase
     if not forests: return
     
     c1, c2, c3 = st.columns([2, 1, 1])
@@ -273,7 +262,6 @@ def view_analysis_invoice():
     fid = next(f['id'] for f in forests if f['name'] == sel_forest)
     target_date = f"{year}-{MONTH_MAP[month_str]:02d}-01"
 
-    # Part 1: 对比分析
     st.subheader(f"📊 Budget vs Actual ({month_str} {year})")
     try:
         act_costs = backend.supabase.table("fact_operational_costs").select("total_amount").eq("forest_id", fid).eq("month", target_date).eq("record_type", "Actual").execute().data
@@ -296,7 +284,8 @@ def view_analysis_invoice():
             go.Bar(name='Actual', x=['Revenue', 'Costs'], y=[total_act_rev, total_act_cost], marker_color='#2874A6')
         ])
         fig.update_layout(barmode='group', height=300, margin=dict(l=20, r=20, t=30, b=20))
-        st.plotly_chart(fig, use_container_width=True)
+        # 修复：使用 width="stretch"
+        st.plotly_chart(fig, width="stretch")
 
     except Exception as e:
         st.error(f"Error loading analysis: {e}")
@@ -304,7 +293,6 @@ def view_analysis_invoice():
 
     st.divider()
 
-    # Part 2: 发票生成
     st.subheader(f"📑 Invoice Generator")
     col_input, col_preview = st.columns([1, 2])
     with col_input:
@@ -325,16 +313,15 @@ def view_analysis_invoice():
         st.download_button("⬇️ Download HTML", invoice_html, file_name=f"{invoice_no}.html", mime="text/html")
 
 
-# --- View 5: Invoice Bot (发票机器人) ---
+# --- View 5: Invoice Bot ---
 def view_invoice_bot():
     st.title("🤖 Invoice Bot (Audit & Archive)")
     
-    if not backend.init_gemini():
+    if not backend.check_google_key():
         st.error("⚠️ Google API Key missing! Please update .streamlit/secrets.toml")
     
     tab_audit, tab_archive = st.tabs(["🚀 Upload & Audit", "🗄️ Invoice Archive"])
     
-    # --- Tab 1: Upload & Audit ---
     with tab_audit:
         col_upload, col_review = st.columns([1, 2])
         
@@ -346,7 +333,6 @@ def view_invoice_bot():
                 if st.button("🚀 Start AI Analysis", type="primary"):
                     results = []
                     
-                    # 进度条
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     total_files = len(uploaded_files)
@@ -399,10 +385,11 @@ def view_invoice_bot():
                     })
                 
                 df_rec = pd.DataFrame(reconcile_data)
+                # 修复：使用 width="stretch"
                 edited_df = st.data_editor(
                     df_rec, 
                     column_config={"Select": st.column_config.CheckboxColumn("Archive?", default=True), "Index": None},
-                    hide_index=True, use_container_width=True
+                    hide_index=True, width="stretch"
                 )
                 
                 if st.button("💾 Confirm & Save Selected to Cloud"):
@@ -419,13 +406,11 @@ def view_invoice_bot():
                             original_item = results[row['Index']]
                             file_obj = original_item['file_obj']
                             
-                            # Upload to Storage
                             path = f"{int(time.time())}_{row['File']}"
                             file_obj.seek(0)
                             backend.supabase.storage.from_("invoices").upload(path, file_obj.read(), {"content-type": "application/pdf"})
                             public_url = backend.supabase.storage.from_("invoices").get_public_url(path)
                             
-                            # Insert into DB
                             backend.supabase.table("invoice_archive").insert({
                                 "invoice_no": row['Inv #'], "vendor": row['Vendor'],
                                 "amount": row['Inv Amount'], "file_name": row['File'],
@@ -442,7 +427,6 @@ def view_invoice_bot():
                     else:
                         st.warning("No invoices selected.")
 
-    # --- Tab 2: Archive ---
     with tab_archive:
         st.subheader("🗄️ Invoice Digital Cabinet")
         search = st.text_input("Search Vendor/Invoice #")
@@ -456,6 +440,7 @@ def view_invoice_bot():
             df_archive = pd.DataFrame(res)
             
             if not df_archive.empty:
+                # 修复：使用 width="stretch"
                 st.dataframe(
                     df_archive,
                     column_config={
@@ -463,7 +448,7 @@ def view_invoice_bot():
                         "created_at": st.column_config.DatetimeColumn("Date", format="YYYY-MM-DD"),
                         "amount": st.column_config.NumberColumn("Amount", format="$%.2f")
                     },
-                    use_container_width=True, hide_index=True
+                    width="stretch", hide_index=True
                 )
             else:
                 st.info("No archives found.")
