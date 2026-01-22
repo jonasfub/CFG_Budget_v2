@@ -307,6 +307,8 @@ def view_analysis_invoice():
 
 
 # --- View 5: Invoice Bot (Multi-Invoice Support) ---
+# --- 替换 views.py 中的 view_invoice_bot 函数 (完整版) ---
+
 def view_invoice_bot():
     st.title("🤖 Invoice Bot (Audit & Archive)")
     
@@ -333,10 +335,10 @@ def view_invoice_bot():
                     for i, file in enumerate(uploaded_files):
                         status_text.markdown(f"**Analyzing {i+1}/{total_files}:** `{file.name}`...")
                         
-                        # Modified Logic: Handle list of invoices
+                        # 1. 调用后端读取发票列表
                         data_list = backend.real_extract_invoice_data(file)
                         
-                        # Re-attach file object to each detected invoice
+                        # 2. 把文件对象塞回去 (方便后续上传)
                         for item in data_list:
                             item['file_obj'] = file
                             
@@ -350,6 +352,129 @@ def view_invoice_bot():
                     status_text.empty()
                     progress_bar.empty()
                     st.session_state['ocr_results'] = results
+
+        with col_review:
+            st.subheader("2. Review & Archive")
+            
+            if 'ocr_results' in st.session_state:
+                results = st.session_state['ocr_results']
+                reconcile_data = []
+                
+                for i, item in enumerate(results):
+                    # --- 变量初始化 (关键步骤，不能少) ---
+                    match_status = "❌ Not Found"
+                    db_amount = 0.0
+                    diff = 0.0
+                    
+                    # 1. 错误检查
+                    if item.get("vendor_detected") == "Error":
+                        match_status = "❌ AI Error"
+                        error_msg = item.get("error_msg", "Unknown Error")
+                        # 可以在界面上显示个小警告
+                        # st.warning(f"File {item.get('filename')}: {error_msg}")
+                    else:
+                        # 2. 数据库匹配逻辑
+                        # 尝试根据 Vendor 名字去 dim_cost_activities 表找对应的 ID
+                        acts = backend.supabase.table("dim_cost_activities").select("id").ilike("activity_name", f"%{item['vendor_detected']}%").execute().data
+                        
+                        if acts:
+                            act_id = acts[0]['id']
+                            # 去 fact_operational_costs 表找 Actual 费用
+                            # 这里简单匹配: 同一供应商在数据库里的所有 Actual 记录之和 (实际场景可能需要匹配日期)
+                            costs = backend.supabase.table("fact_operational_costs").select("total_amount")\
+                                .eq("activity_id", act_id).eq("record_type", "Actual").execute().data
+                            
+                            if costs:
+                                # 取第一条匹配到的金额 (简化逻辑)
+                                db_amount = float(costs[0]['total_amount'])
+                                diff = float(item['amount_detected']) - db_amount
+                                match_status = "✅ Match" if abs(diff) < 1.0 else "⚠️ Variance"
+
+                    # 3. 构造显示数据
+                    reconcile_data.append({
+                        "Select": False, "Index": i,
+                        "File": item.get('filename'), 
+                        "Vendor": item.get('vendor_detected'),
+                        "Date": item.get('invoice_date'),       # 新增字段
+                        "Desc": item.get('description'),        # 新增字段
+                        "Inv #": item.get('invoice_no', ''), 
+                        "Inv Amount": item.get('amount_detected', 0), 
+                        "ERP Amount": db_amount, 
+                        "Diff": diff, 
+                        "Status": match_status
+                    })
+                
+                df_rec = pd.DataFrame(reconcile_data)
+                
+                if not df_rec.empty:
+                    # 显示可编辑表格
+                    edited_df = st.data_editor(
+                        df_rec, 
+                        column_config={
+                            "Select": st.column_config.CheckboxColumn("Archive?", default=True), 
+                            "Index": None,
+                            "Date": st.column_config.DateColumn("Inv Date", format="YYYY-MM-DD"),
+                            "Desc": st.column_config.TextColumn("Summary", width="medium"),
+                            "Inv Amount": st.column_config.NumberColumn(format="$%.2f"),
+                            "ERP Amount": st.column_config.NumberColumn(format="$%.2f"),
+                            "Diff": st.column_config.NumberColumn(format="$%.2f"),
+                        },
+                        hide_index=True, width="stretch"
+                    )
+                    
+                    if st.button("💾 Confirm & Save"):
+                        save_status = st.empty()
+                        selected_rows = edited_df[edited_df["Select"] == True]
+                        
+                        if not selected_rows.empty:
+                            save_status.info("Saving...")
+                            for idx, row in selected_rows.iterrows():
+                                # 找到原始数据对象，获取文件流
+                                original_item = results[row['Index']]
+                                file_obj = original_item['file_obj']
+                                file_obj.seek(0)
+                                
+                                # 上传 PDF 到 Supabase Storage
+                                path = f"{int(time.time())}_{i}_{row['File']}"
+                                backend.supabase.storage.from_("invoices").upload(path, file_obj.read(), {"content-type": "application/pdf"})
+                                public_url = backend.supabase.storage.from_("invoices").get_public_url(path)
+                                
+                                # 写入 Supabase Database
+                                backend.supabase.table("invoice_archive").insert({
+                                    "invoice_no": row['Inv #'], 
+                                    "vendor": row['Vendor'], 
+                                    "invoice_date": str(row['Date']),  
+                                    "description": row['Desc'],        
+                                    "amount": row['Inv Amount'],
+                                    "file_name": row['File'], 
+                                    "file_url": public_url, 
+                                    "status": "Verified"
+                                }).execute()
+                            save_status.success("Saved!")
+                            # 清除缓存，防止重复提交
+                            # del st.session_state['ocr_results'] 
+                            # st.rerun()
+                        else:
+                            st.warning("No invoices selected.")
+            else:
+                st.info("Upload invoices to start.")
+
+    with tab_archive:
+        st.subheader("🗄️ Invoice Digital Cabinet")
+        search = st.text_input("Search Vendor/Invoice #")
+        try:
+            query = backend.supabase.table("invoice_archive").select("*").order("created_at", desc=True)
+            if search: query = query.or_(f"vendor.ilike.%{search}%,invoice_no.ilike.%{search}%")
+            res = query.execute().data
+            if res:
+                st.dataframe(pd.DataFrame(res), column_config={
+                    "file_url": st.column_config.LinkColumn("Link", display_text="Download"),
+                    "amount": st.column_config.NumberColumn(format="$%.2f"),
+                    "invoice_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD")
+                }, width="stretch", hide_index=True)
+            else: st.info("No archives.")
+        except Exception as e: 
+            st.error(f"Error loading archive: {e}")
 
         # --- 修改 views.py 中 view_invoice_bot 的 Review 部分 ---
 
