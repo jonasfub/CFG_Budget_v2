@@ -175,15 +175,23 @@ def view_monthly_input(mode):
                          df_budget = backend.get_monthly_data("fact_operational_costs", "dim_cost_activities", "activity_id", "activity_name", fid, target_date, "Budget", ['unit_rate', 'total_amount'])
                          
                          if not df_budget.empty:
-                             bud_rate_map = df_budget.set_index('id')['unit_rate'].to_dict()
-                             
-                             # 应用逻辑
-                             for idx, row in df.iterrows():
-                                 act_name = str(row['activity_name']).lower()
-                                 # 简单判断一次性项目关键字 (根据你的 Invoice 16027: Road, Skid, Maintenance 是 lump sum)
-                                 is_lump_sum = any(x in act_name for x in ['road', 'construct', 'mainten', 'fee', 'lump', 'fixed', 'general'])
-                                 
-                                 bud_rate = bud_rate_map.get(row['id'], 0.0)
+    # 1. 修改 set_index 的列名为 'activity_id'
+    bud_rate_map = df_budget.set_index('activity_id')['unit_rate'].to_dict()
+    
+    # 应用逻辑
+    for idx, row in df.iterrows():
+        act_name = str(row['activity_name']).lower()
+        is_lump_sum = any(x in act_name for x in ['road', 'construct', 'mainten', 'fee', 'lump', 'fixed', 'general'])
+        
+        # 2. 修改获取映射的键值为 row['activity_id']
+        bud_rate = bud_rate_map.get(row['activity_id'], 0.0)
+        
+        if is_lump_sum:
+            df.at[idx, 'unit_rate'] = 0.0
+            df.at[idx, 'quantity'] = 1.0 
+        else:
+            if bud_rate > 0:
+                df.at[idx, 'unit_rate'] = bud_rate
                                  
                                  if is_lump_sum:
                                      # 一次性项目：单价置0，总额留空让用户填，数量设为1作为标记
