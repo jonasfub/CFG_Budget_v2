@@ -121,19 +121,21 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
     </html>
     """
 
-# --- E. AI 识别核心逻辑 (完全重写适配新版 SDK) ---
+# --- E. AI 识别核心逻辑 (调试版) ---
 def real_extract_invoice_data(file_obj):
     try:
         # 1. 检查 Key
         if not check_google_key():
+            print("DEBUG: API Key missing") # <--- 调试信息
             return {"vendor_detected": "Error", "error": "API Key missing", "amount_detected": 0, "filename": file_obj.name}
 
-        # 2. 初始化客户端 (New Client Style)
+        # 2. 初始化客户端
         client = genai.Client(api_key=st.secrets["google"]["api_key"])
         
         # 3. 读取文件
         file_obj.seek(0)
         file_bytes = file_obj.read()
+        print(f"DEBUG: Read file {file_obj.name}, size: {len(file_bytes)} bytes") # <--- 调试信息
         
         # 4. 构建 Prompt
         prompt_text = """
@@ -145,7 +147,8 @@ def real_extract_invoice_data(file_obj):
         Return ONLY valid JSON.
         """
         
-        # 5. 调用 AI (New Method Style)
+        # 5. 调用 AI
+        print("DEBUG: Sending request to Gemini...") # <--- 调试信息
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=[
@@ -158,8 +161,12 @@ def real_extract_invoice_data(file_obj):
             ]
         )
         
-        # 6. 解析结果
-        text_response = response.text.strip()
+        # 6. 打印 AI 原始回复 (关键！)
+        raw_text = response.text
+        print(f"DEBUG: Gemini Raw Response:\n{raw_text}") # <--- 这里最重要！看 AI 到底说了啥
+        
+        # 7. 解析结果
+        text_response = raw_text.strip()
         if text_response.startswith("```"):
             text_response = text_response.split("```")[1].strip()
         if text_response.startswith("json"): 
@@ -170,6 +177,7 @@ def real_extract_invoice_data(file_obj):
         return data
 
     except Exception as e:
+        print(f"DEBUG: Error occurred: {str(e)}") # <--- 打印具体报错
         return {
             "filename": file_obj.name,
             "vendor_detected": "Error", 
