@@ -88,7 +88,6 @@ def view_dashboard():
                     fig = go.Figure()
                     fig.add_trace(go.Bar(x=merged['month'], y=merged.get('Revenue',0), name='Revenue', marker_color='#27AE60'))
                     fig.add_trace(go.Bar(x=merged['month'], y=merged.get('Costs',0), name='Costs', marker_color='#C0392B'))
-                    # 修复：使用 width="stretch"
                     st.plotly_chart(fig, width="stretch")
             else:
                 st.info("No data available yet.")
@@ -101,7 +100,6 @@ def view_dashboard():
                     if not acts.empty:
                         merged_cost = pd.merge(df_cost, acts, left_on='activity_id', right_on='id')
                         fig2 = px.pie(merged_cost, values='total_amount', names='category', hole=0.4)
-                        # 修复：使用 width="stretch"
                         st.plotly_chart(fig2, width="stretch")
                 except:
                     st.info("Could not load categories.")
@@ -152,7 +150,6 @@ def view_log_sales():
         "total_value": st.column_config.NumberColumn("Total ($)", format="$%.2f"),
     }
     
-    # 修复：使用 width="stretch"
     edited = st.data_editor(df, key="log_sales", num_rows="dynamic", width="stretch", column_config=col_cfg)
     
     if st.button("💾 Save Transactions"):
@@ -218,7 +215,6 @@ def view_monthly_input(mode):
                 safe_cols = [c for c in cols_order if c in df_detail.columns]
                 df_detail = df_detail[safe_cols]
                 
-                # 修复：使用 width="stretch"
                 edited_detail = st.data_editor(df_detail, key=f"d_{mode}_{target_date}", hide_index=True, width="stretch", column_config=detail_cfg)
                 
                 if st.button("Save Forecast", key=f"b_detail_{mode}"):
@@ -229,7 +225,6 @@ def view_monthly_input(mode):
                  df = backend.get_monthly_data("fact_production_volume", "dim_products", "grade_id", "grade_code", fid, target_date, mode, ['vol_tonnes', 'vol_jas', 'price_jas', 'amount'])
                  
                  cfg = {"grade_id": None, "grade_code": st.column_config.TextColumn("Grade", disabled=True)}
-                 # 修复：使用 width="stretch"
                  edited = st.data_editor(df, key=f"v_{mode}_{target_date}", hide_index=True, width="stretch", column_config=cfg)
                  
                  if st.button("Save Volume", key=f"b1_{mode}"):
@@ -239,7 +234,6 @@ def view_monthly_input(mode):
                  df = backend.get_monthly_data("fact_operational_costs", "dim_cost_activities", "activity_id", "activity_name", fid, target_date, mode, ['quantity', 'unit_rate', 'total_amount'])
                  
                  cfg = {"activity_id": None, "activity_name": st.column_config.TextColumn("Activity", disabled=True)}
-                 # 修复：使用 width="stretch"
                  edited = st.data_editor(df, key=f"c_{mode}_{target_date}", hide_index=True, width="stretch", column_config=cfg)
                  
                  if st.button("Save Costs", key=f"b2_{mode}"):
@@ -284,7 +278,6 @@ def view_analysis_invoice():
             go.Bar(name='Actual', x=['Revenue', 'Costs'], y=[total_act_rev, total_act_cost], marker_color='#2874A6')
         ])
         fig.update_layout(barmode='group', height=300, margin=dict(l=20, r=20, t=30, b=20))
-        # 修复：使用 width="stretch"
         st.plotly_chart(fig, width="stretch")
 
     except Exception as e:
@@ -313,7 +306,7 @@ def view_analysis_invoice():
         st.download_button("⬇️ Download HTML", invoice_html, file_name=f"{invoice_no}.html", mime="text/html")
 
 
-# --- View 5: Invoice Bot (调试增强版) ---
+# --- View 5: Invoice Bot (Multi-Invoice Support) ---
 def view_invoice_bot():
     st.title("🤖 Invoice Bot (Audit & Archive)")
     
@@ -332,26 +325,24 @@ def view_invoice_bot():
             
             if uploaded_files:
                 if st.button("🚀 Start AI Analysis", type="primary"):
-                results = []
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                total_files = len(uploaded_files)
-    
-                for i, file in enumerate(uploaded_files):
-                status_text.markdown(f"**Analyzing {i+1}/{total_files}:** `{file.name}`...")
-        
-        # 调用后端，现在返回的是一个列表 data_list
-        data_list = backend.real_extract_invoice_data(file)
-        
-        # 必须要把 file_obj 塞回去，否则后续保存功能会找不到文件流
-        for item in data_list:
-            item['file_obj'] = file
-        
-        # 使用 extend 而不是 append，把多个发票拍平放进总结果里
-        results.extend(data_list)
-        
-        progress_bar.progress((i + 1) / total_files)
-
+                    results = []
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    total_files = len(uploaded_files)
+                    
+                    for i, file in enumerate(uploaded_files):
+                        status_text.markdown(f"**Analyzing {i+1}/{total_files}:** `{file.name}`...")
+                        
+                        # Modified Logic: Handle list of invoices
+                        data_list = backend.real_extract_invoice_data(file)
+                        
+                        # Re-attach file object to each detected invoice
+                        for item in data_list:
+                            item['file_obj'] = file
+                            
+                        results.extend(data_list)
+                        
+                        progress_bar.progress((i + 1) / total_files)
                     
                     progress_bar.progress(100)
                     status_text.success("✅ Analysis Complete!")
@@ -368,9 +359,9 @@ def view_invoice_bot():
                 reconcile_data = []
                 
                 for i, item in enumerate(results):
-                    # --- 错误处理显示 ---
+                    # Error Handling
                     if item.get("vendor_detected") == "Error":
-                        st.error(f"❌ File: {item['filename']} - Failed: {item.get('error_msg')}")
+                        st.error(f"❌ File: {item.get('filename', 'Unknown')} - Failed: {item.get('error_msg')}")
                         match_status = "❌ AI Error"
                         db_amount = 0
                         diff = 0
@@ -379,7 +370,7 @@ def view_invoice_bot():
                         db_amount = 0
                         diff = 0
                         
-                        # 数据库匹配逻辑
+                        # Database Matching
                         acts = backend.supabase.table("dim_cost_activities").select("id").ilike("activity_name", f"%{item['vendor_detected']}%").execute().data
                         if acts:
                             act_id = acts[0]['id']
@@ -392,7 +383,7 @@ def view_invoice_bot():
 
                     reconcile_data.append({
                         "Select": False, "Index": i,
-                        "File": item['filename'], 
+                        "File": item.get('filename'), 
                         "Vendor": item.get('vendor_detected'),
                         "Inv #": item.get('invoice_no', ''), 
                         "Inv Amount": item.get('amount_detected', 0), 
@@ -401,34 +392,36 @@ def view_invoice_bot():
                 
                 df_rec = pd.DataFrame(reconcile_data)
                 
-                # 只有当没有错误时才允许勾选保存
-                edited_df = st.data_editor(
-                    df_rec, 
-                    column_config={"Select": st.column_config.CheckboxColumn("Archive?", default=True), "Index": None},
-                    hide_index=True, width="stretch"
-                )
-                
-                if st.button("💾 Confirm & Save"):
-                    # ... (保存逻辑保持不变) ...
-                    save_status = st.empty()
-                    selected_rows = edited_df[edited_df["Select"] == True]
-                    if not selected_rows.empty:
-                        save_status.info("Saving...")
-                        for idx, row in selected_rows.iterrows():
-                            # 复用之前的上传逻辑
-                            original_item = results[row['Index']]
-                            file_obj = original_item['file_obj']
-                            path = f"{int(time.time())}_{row['File']}"
-                            file_obj.seek(0)
-                            backend.supabase.storage.from_("invoices").upload(path, file_obj.read(), {"content-type": "application/pdf"})
-                            public_url = backend.supabase.storage.from_("invoices").get_public_url(path)
-                            backend.supabase.table("invoice_archive").insert({
-                                "invoice_no": row['Inv #'], "vendor": row['Vendor'], "amount": row['Inv Amount'],
-                                "file_name": row['File'], "file_url": public_url, "status": "Verified"
-                            }).execute()
-                        save_status.success("Saved!")
-                    else:
-                        st.warning("No invoices selected.")
+                if not df_rec.empty:
+                    edited_df = st.data_editor(
+                        df_rec, 
+                        column_config={"Select": st.column_config.CheckboxColumn("Archive?", default=True), "Index": None},
+                        hide_index=True, width="stretch"
+                    )
+                    
+                    if st.button("💾 Confirm & Save"):
+                        save_status = st.empty()
+                        selected_rows = edited_df[edited_df["Select"] == True]
+                        if not selected_rows.empty:
+                            save_status.info("Saving...")
+                            for idx, row in selected_rows.iterrows():
+                                # Upload Logic
+                                original_item = results[row['Index']]
+                                file_obj = original_item['file_obj']
+                                
+                                # Reset file pointer for multiple uploads
+                                file_obj.seek(0)
+                                
+                                path = f"{int(time.time())}_{i}_{row['File']}"
+                                backend.supabase.storage.from_("invoices").upload(path, file_obj.read(), {"content-type": "application/pdf"})
+                                public_url = backend.supabase.storage.from_("invoices").get_public_url(path)
+                                backend.supabase.table("invoice_archive").insert({
+                                    "invoice_no": row['Inv #'], "vendor": row['Vendor'], "amount": row['Inv Amount'],
+                                    "file_name": row['File'], "file_url": public_url, "status": "Verified"
+                                }).execute()
+                            save_status.success("Saved!")
+                        else:
+                            st.warning("No invoices selected.")
 
     with tab_archive:
         st.subheader("🗄️ Invoice Digital Cabinet")
@@ -446,12 +439,10 @@ def view_invoice_bot():
         except: st.error("Error loading archive.")
 
 
-# --- 在 views.py 文件末尾添加 ---
-
+# --- View 6: Debug Models (Optional) ---
 def view_debug_models():
     st.title("🛠️ Google Model Debugger")
     
-    # 检查 Key 是否存在
     if "google" not in st.secrets or "api_key" not in st.secrets["google"]:
         st.error("❌ Google API Key not found in secrets!")
         return
@@ -459,29 +450,23 @@ def view_debug_models():
     import google.generativeai as genai
     genai.configure(api_key=st.secrets["google"]["api_key"])
     
-    st.write("正在连接 Google 服务器查询可用模型...")
+    st.write("Checking available models...")
     
     try:
-        # 获取所有模型
         models = list(genai.list_models())
-        
-        # 筛选出生成式模型 (排除掉 embedding 模型等)
         chat_models = [m for m in models if 'generateContent' in m.supported_generation_methods]
         
-        st.success(f"✅ 连接成功！共找到 {len(chat_models)} 个可用生成模型：")
+        st.success(f"✅ Found {len(chat_models)} models:")
         
-        # 显示列表
         model_data = []
         for m in chat_models:
             model_data.append({
-                "Model Name (Use this in code)": m.name,
+                "Model Name": m.name,
                 "Display Name": m.display_name,
-                "Version": m.version
             })
             
         st.dataframe(pd.DataFrame(model_data), use_container_width=True)
-        
-        st.info("💡 请复制 'Model Name' 列的值（例如 `models/gemini-2.5-flash`），并将其填入 backend.py 的代码中。")
+        st.info("Copy the 'Model Name' (e.g., models/gemini-1.5-flash) into backend.py")
         
     except Exception as e:
-        st.error(f"❌ 连接失败: {str(e)}")
+        st.error(f"❌ Connection Failed: {str(e)}")
