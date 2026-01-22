@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from google import genai            # <--- 新版导入方式
-from google.genai import types      # <--- 引入类型支持
+# --- 关键修改：使用新版 Google SDK 导入方式 ---
+from google import genai
+from google.genai import types
 import json
 import time
 
@@ -23,7 +24,11 @@ def check_google_key():
     # 检查 secrets 是否存在
     return "google" in st.secrets and "api_key" in st.secrets["google"]
 
-# --- C. 核心数据函数 (保持不变) ---
+def init_gemini():
+    # 兼容旧代码调用，实际逻辑由 check_google_key 处理
+    return check_google_key()
+
+# --- C. 核心数据函数 ---
 def get_forest_list():
     if not supabase: return []
     try:
@@ -116,14 +121,14 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
     </html>
     """
 
-# --- E. AI 识别核心逻辑 (新版 SDK 实现) ---
+# --- E. AI 识别核心逻辑 (完全重写适配新版 SDK) ---
 def real_extract_invoice_data(file_obj):
     try:
         # 1. 检查 Key
         if not check_google_key():
             return {"vendor_detected": "Error", "error": "API Key missing", "amount_detected": 0, "filename": file_obj.name}
 
-        # 2. 初始化客户端 (新版写法)
+        # 2. 初始化客户端 (New Client Style)
         client = genai.Client(api_key=st.secrets["google"]["api_key"])
         
         # 3. 读取文件
@@ -140,7 +145,7 @@ def real_extract_invoice_data(file_obj):
         Return ONLY valid JSON.
         """
         
-        # 5. 调用 AI (新版写法：使用 contents 列表包含 Parts)
+        # 5. 调用 AI (New Method Style)
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=[
