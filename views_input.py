@@ -1,18 +1,18 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
+import time
 import backend 
 
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 MONTH_MAP = {m: i+1 for i, m in enumerate(MONTHS)}
 
-# --- Helper: 模拟获取 Compartments (建议在 backend 中真正实现) ---
+# --- Helper: 模拟获取 Compartments ---
+# 实际项目中建议在 backend 中写 SQL 获取: supabase.table("dim_compartments").select("code")...
 def get_compartment_options(forest_id):
-    # 实际项目中应从 backend.supabase.table("dim_compartments").select("code").eq("forest_id", fid)... 获取
-    # 这里基于 Invoice 16027 硬编码示例
     return ["60810", "60812", "60814", "General"]
 
-# --- 1. Log Sales (Updated based on Invoice 16027) ---
+# --- 1. Log Sales Data (Transaction Level) ---
 def view_log_sales():
     st.title("🚛 Log Sales Data (Transaction Level)")
     st.caption("对应发票 Production Summary 部分，支持负数冲销与自营/代售区分")
@@ -28,7 +28,7 @@ def view_log_sales():
     # 获取基础配置数据
     products = backend.supabase.table("dim_products").select("*").execute().data
     product_codes = [p['grade_code'] for p in products] if products else []
-    compartment_opts = get_compartment_options(fid) # [新增] 地块选项
+    compartment_opts = get_compartment_options(fid) 
     
     # 获取现有数据
     res = backend.supabase.table("actual_sales_transactions").select("*").eq("forest_id", fid).order("date", desc=True).limit(50).execute()
@@ -39,15 +39,15 @@ def view_log_sales():
         df = pd.DataFrame([{
             "date": date.today(), 
             "ticket_number": "", 
-            "compartment": compartment_opts[0], # [新增]
+            "compartment": compartment_opts[0], 
             "customer": "C001", 
             "market": "Export",
-            "sale_type": "Purchase (Inv)", # [新增] 默认 F360 代售/收购
+            "sale_type": "Purchase (Inv)", 
             "grade_code": "A", 
             "net_tonnes": 0.0, 
             "jas": 0.0, 
             "price": 0.0, 
-            "levy_deduction": 0.0, # [新增] 扣费
+            "levy_deduction": 0.0, 
             "total_value": 0.0
         }])
     else:
@@ -63,20 +63,20 @@ def view_log_sales():
         "id": None, "forest_id": None, "grade_id": None, "created_at": None,
         "date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
         "ticket_number": st.column_config.TextColumn("Ticket #"),
-        "compartment": st.column_config.SelectboxColumn("Block/Cpt", options=compartment_opts, required=True), # [新增]
+        "compartment": st.column_config.SelectboxColumn("Block/Cpt", options=compartment_opts, required=True),
         "customer": st.column_config.TextColumn("Customer", default="FCO"),
         "market": st.column_config.SelectboxColumn("Market", options=["Export", "Domestic"], default="Export"),
         "sale_type": st.column_config.SelectboxColumn(
             "Sale Type", 
             options=["Purchase (Inv)", "Direct (Non-Inv)", "Adjustment"],
             help="Purchase: F360买断/代售(有金额); Direct: CFGC直销($0); Adjustment: 冲销"
-        ), # [新增] 关键逻辑字段
+        ), 
         "grade_code": st.column_config.SelectboxColumn("Grade", options=product_codes, required=True),
         "net_tonnes": st.column_config.NumberColumn("Tonnes", format="%.2f"), # 允许负数
         "jas": st.column_config.NumberColumn("JAS", format="%.2f"),
         "conversion_factor": st.column_config.NumberColumn("Conv.", format="%.3f", disabled=True),
         "price": st.column_config.NumberColumn("Price", format="$%.2f"),
-        "levy_deduction": st.column_config.NumberColumn("Levies", format="$%.2f", help="Credit Insurance / Comm. Levy"), # [新增]
+        "levy_deduction": st.column_config.NumberColumn("Levies", format="$%.2f", help="Credit Insurance / Comm. Levy"),
         "total_value": st.column_config.NumberColumn("Net Total ($)", format="$%.2f"),
     }
     
@@ -88,7 +88,6 @@ def view_log_sales():
             gid = next((p['id'] for p in products if p['grade_code'] == row.get('grade_code')), None)
             
             # 自动计算 Total Value (如果用户没填)
-            # 逻辑：(Tonnes * Price) - Levy
             calc_total = row.get('total_value')
             if calc_total == 0 and row.get('price', 0) != 0:
                 calc_total = (row.get('net_tonnes', 0) * row.get('price', 0)) - row.get('levy_deduction', 0)
@@ -97,19 +96,18 @@ def view_log_sales():
                 "forest_id": fid, 
                 "date": str(row['date']), 
                 "ticket_number": row.get('ticket_number'),
-                "compartment": row.get('compartment'), # 需确保 DB 有此列
-                "sale_type": row.get('sale_type'),     # 需确保 DB 有此列
+                "compartment": row.get('compartment'), 
+                "sale_type": row.get('sale_type'),     
                 "grade_id": gid, 
                 "customer": row.get('customer'), 
                 "market": row.get('market'),
                 "net_tonnes": row.get('net_tonnes'), 
                 "jas": row.get('jas'), 
                 "price": row.get('price'), 
-                "levy_deduction": row.get('levy_deduction', 0), # 需确保 DB 有此列
+                "levy_deduction": row.get('levy_deduction', 0), 
                 "total_value": calc_total
             })
         try:
-            # 注意: 请确保 Supabase 表 'actual_sales_transactions' 已经添加了 compartment, sale_type, levy_deduction 字段
             backend.supabase.table("actual_sales_transactions").upsert(recs).execute()
             st.success("Transactions Saved! (Total calculated automatically where 0)")
         except Exception as e: st.error(f"Error: {e} (Check if DB columns exist!)")
@@ -144,10 +142,30 @@ def view_monthly_input(mode):
             if tab_name == "📋 Sales Forecast":
                 df = backend.get_monthly_data("fact_production_volume", "dim_products", "grade_id", "grade_code", fid, target_date, mode, ['vol_tonnes', 'vol_jas', 'price_jas', 'amount'])
                 
-                # ... (保持原有 Budget 逻辑不变，省略以节省空间) ...
-                edited_detail = st.data_editor(df, key=f"d_{mode}", hide_index=True, width="stretch")
+                df_detail = df.copy()
+                df_detail['conversion_factor'] = df_detail.apply(lambda x: x['vol_jas']/x['vol_tonnes'] if x['vol_tonnes']>0 else 0, axis=1)
+                
+                detail_cfg = {
+                    "grade_id": None, "grade_code": st.column_config.TextColumn("Grade", disabled=True),
+                    "market": st.column_config.SelectboxColumn("Market", options=["Export", "Domestic"]),
+                    "customer": st.column_config.TextColumn("Customer", default="Expected"),
+                    "vol_tonnes": st.column_config.NumberColumn("Tonnes", format="%.1f"),
+                    "conversion_factor": st.column_config.NumberColumn("Conv.", format="%.3f"),
+                    "vol_jas": st.column_config.NumberColumn("JAS", format="%.1f"),
+                    "price_jas": st.column_config.NumberColumn("Price", format="$%.0f"),
+                    "amount": st.column_config.NumberColumn("Revenue", format="$%.0f"),
+                }
+                
+                # 重新排序列
+                cols_order = ['grade_id', 'grade_code', 'market', 'customer', 'vol_tonnes', 'conversion_factor', 'vol_jas', 'price_jas', 'amount']
+                safe_cols = [c for c in cols_order if c in df_detail.columns]
+                df_detail = df_detail[safe_cols]
+                
+                edited_detail = st.data_editor(df_detail, key=f"d_{mode}_{target_date}", hide_index=True, width="stretch", column_config=detail_cfg)
+                
                 if st.button("Save Forecast", key=f"b_detail_{mode}"):
-                    backend.save_monthly_data(edited_detail, "fact_production_volume", "grade_id", fid, target_date, mode)
+                    if backend.save_monthly_data(edited_detail, "fact_production_volume", "grade_id", fid, target_date, mode): 
+                        st.success("Detailed Forecast Saved!")
 
             # --- Tab B: Transport & Volume ---
             elif tab_name == "🚛 Log Transport & Volume":
@@ -159,7 +177,7 @@ def view_monthly_input(mode):
                  if st.button("Save Volume", key=f"b1_{mode}"):
                      if backend.save_monthly_data(edited, "fact_production_volume", "grade_id", fid, target_date, mode): st.success("Saved!")
 
-            # --- Tab C: Operational Costs (CORE UPDATE) ---
+            # --- Tab C: Operational Costs (CORE UPDATE: KEY ERROR FIXED) ---
             elif tab_name == "💰 Operational & Harvesting":
                  
                  # 1. 获取当前数据
@@ -175,23 +193,16 @@ def view_monthly_input(mode):
                          df_budget = backend.get_monthly_data("fact_operational_costs", "dim_cost_activities", "activity_id", "activity_name", fid, target_date, "Budget", ['unit_rate', 'total_amount'])
                          
                          if not df_budget.empty:
-    # 1. 修改 set_index 的列名为 'activity_id'
-    bud_rate_map = df_budget.set_index('activity_id')['unit_rate'].to_dict()
-    
-    # 应用逻辑
-    for idx, row in df.iterrows():
-        act_name = str(row['activity_name']).lower()
-        is_lump_sum = any(x in act_name for x in ['road', 'construct', 'mainten', 'fee', 'lump', 'fixed', 'general'])
-        
-        # 2. 修改获取映射的键值为 row['activity_id']
-        bud_rate = bud_rate_map.get(row['activity_id'], 0.0)
-        
-        if is_lump_sum:
-            df.at[idx, 'unit_rate'] = 0.0
-            df.at[idx, 'quantity'] = 1.0 
-        else:
-            if bud_rate > 0:
-                df.at[idx, 'unit_rate'] = bud_rate
+                             # [修复点]: 使用 'activity_id' 而不是 'id'，因为 backend.get_monthly_data 重命名了列
+                             bud_rate_map = df_budget.set_index('activity_id')['unit_rate'].to_dict()
+                             
+                             # 应用逻辑
+                             for idx, row in df.iterrows():
+                                 act_name = str(row['activity_name']).lower()
+                                 is_lump_sum = any(x in act_name for x in ['road', 'construct', 'mainten', 'fee', 'lump', 'fixed', 'general'])
+                                 
+                                 # [修复点]: 使用 row['activity_id'] 获取单价
+                                 bud_rate = bud_rate_map.get(row['activity_id'], 0.0)
                                  
                                  if is_lump_sum:
                                      # 一次性项目：单价置0，总额留空让用户填，数量设为1作为标记
