@@ -90,6 +90,16 @@ def view_invoice_bot():
             df_rec = pd.DataFrame(reconcile_data)
             
             if not df_rec.empty:
+                # --- [关键修复] 类型强制转换 ---
+                # 将 Date 列转换为 datetime 对象，无法转换的变为 NaT (空值)，防止报错
+                df_rec["Date"] = pd.to_datetime(df_rec["Date"], errors='coerce')
+                
+                # 确保数值列是浮点数
+                df_rec["Inv Amount"] = df_rec["Inv Amount"].astype(float)
+                df_rec["ERP Amount"] = df_rec["ERP Amount"].astype(float)
+                df_rec["Diff"] = df_rec["Diff"].astype(float)
+                # ----------------------------
+
                 edited_df = st.data_editor(
                     df_rec, 
                     column_config={
@@ -123,7 +133,7 @@ def view_invoice_bot():
                                 backend.supabase.table("invoice_archive").insert({
                                     "invoice_no": row['Inv #'], 
                                     "vendor": row['Vendor'], 
-                                    "invoice_date": str(row['Date']),  
+                                    "invoice_date": str(row['Date'].date()) if pd.notnull(row['Date']) else None, # 保存时转回字符串
                                     "description": row['Desc'],        
                                     "amount": row['Inv Amount'],
                                     "file_name": row['File'], 
@@ -147,7 +157,12 @@ def view_invoice_bot():
             if search: query = query.or_(f"vendor.ilike.%{search}%,invoice_no.ilike.%{search}%")
             res = query.execute().data
             if res:
-                st.dataframe(pd.DataFrame(res), column_config={
+                df_archive = pd.DataFrame(res)
+                # Archive 表里的日期也需要转换，否则显示会不一致
+                if "invoice_date" in df_archive.columns:
+                     df_archive["invoice_date"] = pd.to_datetime(df_archive["invoice_date"], errors='coerce')
+
+                st.dataframe(df_archive, column_config={
                     "file_url": st.column_config.LinkColumn("Link", display_text="Download"),
                     "amount": st.column_config.NumberColumn(format="$%.2f"),
                     "invoice_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD")
