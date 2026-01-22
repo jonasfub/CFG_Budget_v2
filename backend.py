@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from google import genai
-from google.genai import types
+import google.generativeai as genai  # <--- 改回使用这个标准库，兼容性最好
 import json
 import time
-import re  # <--- 新增：正则表达式库
+import re
 
 # --- A. 数据库连接 ---
 @st.cache_resource
@@ -83,52 +82,63 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
     <html><head><style>body {{ font-family: Arial; padding: 20px; }} .invoice-box {{ max-width: 800px; margin: auto; border: 1px solid #eee; padding: 30px; }} table {{ width: 100%; }} .text-right {{ text-align: right; }} .item td {{ border-bottom: 1px solid #eee; }} .total td {{ border-top: 2px solid #eee; font-weight: bold; }}</style></head><body><div class="invoice-box"><table><tr><td><h1>INVOICE</h1></td><td class="text-right">#{invoice_no}<br>{invoice_date}</td></tr><tr><td><strong>FCO Management</strong></td><td class="text-right"><strong>Bill To:</strong><br>{bill_to}</td></tr>{rows_html}<tr class="total"><td></td><td class="text-right">Total: ${total_due:,.2f}</td></tr></table></div></body></html>
     """
 
-# --- E. AI 识别核心逻辑 (强力解析版) ---
+# --- E. AI 识别核心逻辑 (稳定兼容版) ---
 def real_extract_invoice_data(file_obj):
     try:
         if not check_google_key():
             return {"vendor_detected": "Error", "error_msg": "API Key missing", "amount_detected": 0, "filename": file_obj.name}
 
-        client = genai.Client(api_key=st.secrets["google"]["api_key"])
+        # 1. 配置 (这是最稳健的写法)
+        genai.configure(api_key=st.secrets["google"]["api_key"])
         
+        # 2. 选择模型 (改用 flash-latest 或者 flash-001)
+        # 如果 flash 依然报错，请尝试 'gemini-pro' (处理纯文本) 或 'gemini-1.5-flash-latest'
+        model = genai.GenerativeModel('gemini-1.5-flash') 
+        
+        # 3. 读取文件
         file_obj.seek(0)
         file_bytes = file_obj.read()
         
+        # 4. 构建 Prompt
         prompt_text = """
         Analyze this invoice PDF. Extract into JSON:
         1. "vendor_detected": Company name.
         2. "invoice_no": Invoice number.
         3. "date_detected": YYYY-MM-DD.
-        4. "amount_detected": Total numeric amount.
-        Return ONLY valid JSON.
+        4. "amount_detected": Total numeric amount (float).
+        
+        Important: Return ONLY the JSON object. No markdown.
         """
         
-        response = client.models.generate_content(
-            model='gemini-1.5-flash',
-            contents=[types.Content(parts=[
-                types.Part.from_bytes(data=file_bytes, mime_type='application/pdf'),
-                types.Part.from_text(text=prompt_text)
-            ])]
-        )
+        # 5. 调用生成 (parts 列表写法)
+        response = model.generate_content([
+            {'mime_type': 'application/pdf', 'data': file_bytes},
+            prompt_text
+        ])
         
-        # --- 强力清洗逻辑 ---
+        # 6. 解析
         raw_text = response.text
-        # 使用正则表达式寻找被 {} 包裹的内容，忽略换行符
         match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         
         if match:
             json_str = match.group(0)
             data = json.loads(json_str)
             data['filename'] = file_obj.name
-            # 确保没有字段遗漏
+            # 容错处理
             if "amount_detected" not in data: data["amount_detected"] = 0.0
             if "invoice_no" not in data: data["invoice_no"] = "Unknown"
+            if isinstance(data["amount_detected"], str):
+                # 尝试把 "$1,234.56" 变成 float
+                clean_amt = data["amount_detected"].replace('$','').replace(',','')
+                try: data["amount_detected"] = float(clean_amt)
+                except: data["amount_detected"] = 0.0
+            
             return data
         else:
             return {
                 "filename": file_obj.name,
                 "vendor_detected": "Error", 
-                "error_msg": f"No JSON found in AI response. Raw: {raw_text[:100]}...",
+                "error_msg": f"No JSON. Raw: {raw_text[:50]}...",
                 "amount_detected": 0.0
             }
 
