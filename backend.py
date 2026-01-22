@@ -125,27 +125,50 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
     </html>
     """
 
-# --- E. AI 识别核心逻辑 ---
+# --- E. AI 识别核心逻辑 (修复版) ---
 def real_extract_invoice_data(file_obj):
     try:
+        # 1. 配置模型
         model = genai.GenerativeModel('gemini-1.5-flash')
-        file_bytes = file_obj.getvalue()
+        
+        # 2. 读取文件
+        file_obj.seek(0) # 确保从头读取
+        file_bytes = file_obj.read()
+        
+        # 3. 发送指令
         prompt = """
         Analyze this invoice PDF. Extract into JSON:
         1. "vendor_detected": Company name.
         2. "invoice_no": Invoice number.
         3. "date_detected": YYYY-MM-DD.
         4. "amount_detected": Total numeric amount.
-        Return ONLY valid JSON.
+        
+        Return ONLY valid JSON. Do not include markdown formatting like ```json.
         """
+        
         response = model.generate_content([{'mime_type': 'application/pdf', 'data': file_bytes}, prompt])
+        
+        # 4. 解析结果
         text_response = response.text.strip()
+        # 清理可能存在的 markdown 符号
         if text_response.startswith("```"):
             text_response = text_response.split("```")[1].strip()
-            if text_response.startswith("json"): text_response = text_response[4:].strip()
+        if text_response.startswith("json"): 
+            text_response = text_response[4:].strip()
         
         data = json.loads(text_response)
+        
+        # 成功时：添加文件名
         data['filename'] = file_obj.name
         return data
+
     except Exception as e:
-        return {"vendor_detected": "Error", "error": str(e), "amount_detected": 0}
+        # 失败时：也要返回文件名！(之前就是漏了这里)
+        return {
+            "filename": file_obj.name,   # <--- 关键修复：补上文件名
+            "vendor_detected": "Error", 
+            "invoice_no": "Error",
+            "date_detected": "",
+            "amount_detected": 0.0,
+            "error": str(e)
+        }
