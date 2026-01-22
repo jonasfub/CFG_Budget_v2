@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-# --- 关键修改：使用新版 Google SDK 导入方式 ---
 from google import genai
 from google.genai import types
 import json
 import time
+import re  # <--- 新增：正则表达式库
 
 # --- A. 数据库连接 ---
 @st.cache_resource
@@ -13,31 +13,23 @@ def init_connection():
     try:
         if "supabase" in st.secrets:
             return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
-    except:
-        return None
+    except: return None
     return None
 
 supabase = init_connection()
 
 # --- B. Google AI 检查 ---
 def check_google_key():
-    # 检查 secrets 是否存在
     return "google" in st.secrets and "api_key" in st.secrets["google"]
 
-def init_gemini():
-    # 兼容旧代码调用，实际逻辑由 check_google_key 处理
-    return check_google_key()
-
-# --- C. 核心数据函数 ---
+# --- C. 核心数据函数 (保持不变) ---
 def get_forest_list():
     if not supabase: return []
-    try:
-        return supabase.table("dim_forests").select("*").execute().data
+    try: return supabase.table("dim_forests").select("*").execute().data
     except: return []
 
 def get_monthly_data(table_name, dim_table, dim_id_col, dim_name_col, forest_id, target_date, record_type, value_cols):
     if not supabase: return pd.DataFrame()
-    
     dims = supabase.table(dim_table).select("*").execute().data
     df_dims = pd.DataFrame(dims)
     if df_dims.empty: return pd.DataFrame()
@@ -64,19 +56,14 @@ def get_monthly_data(table_name, dim_table, dim_id_col, dim_name_col, forest_id,
 
     if 'market' not in df_merged.columns and 'grade_code' in df_merged.columns:
         df_merged['market'] = df_merged['grade_code'].apply(lambda x: 'Domestic' if 'Domestic' in str(x) else 'Export')
-    if 'customer' not in df_merged.columns:
-        df_merged['customer'] = 'FCO' 
-        
+    if 'customer' not in df_merged.columns: df_merged['customer'] = 'FCO' 
     return df_merged
 
 def save_monthly_data(edited_df, table_name, dim_id_col, forest_id, target_date, record_type):
     if not supabase or edited_df.empty: return False
     records = []
     for _, row in edited_df.iterrows():
-        rec = {
-            "forest_id": forest_id, dim_id_col: row[dim_id_col],
-            "month": target_date, "record_type": record_type
-        }
+        rec = { "forest_id": forest_id, dim_id_col: row[dim_id_col], "month": target_date, "record_type": record_type }
         for col in row.index:
             if col in ['vol_tonnes', 'vol_jas', 'price_jas', 'amount', 'quantity', 'unit_rate', 'total_amount']:
                 rec[col] = row[col]
@@ -91,53 +78,22 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
     rows_html = ""
     for item in items:
         rows_html += f"<tr class='item'><td>{item['desc']}</td><td class='text-right'>${item['amount']:,.2f}</td></tr>"
-    
     return f"""
     <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <style>
-            body {{ font-family: Arial, sans-serif; color: #555; padding: 20px; }}
-            .invoice-box {{ max-width: 800px; margin: auto; padding: 30px; border: 1px solid #eee; box-shadow: 0 0 10px rgba(0,0,0,.15); font-size: 16px; line-height: 24px; }}
-            .invoice-box table {{ width: 100%; text-align: left; border-collapse: collapse; }}
-            .invoice-box table td {{ padding: 5px; vertical-align: top; }}
-            .heading td {{ background: #eee; border-bottom: 1px solid #ddd; font-weight: bold; }}
-            .total td {{ border-top: 2px solid #eee; font-weight: bold; }}
-            .text-right {{ text-align: right; }}
-        </style>
-    </head>
-    <body>
-        <div class="invoice-box">
-            <table cellpadding="0" cellspacing="0">
-                <tr class="top"><td colspan="2"><table><tr><td style="font-size:45px; line-height:45px; color:#333;">INVOICE</td><td class="text-right">Inv #: {invoice_no}<br>Date: {invoice_date}</td></tr></table></td></tr>
-                <tr class="information"><td colspan="2"><table><tr><td><strong>FCO Management Ltd</strong><br>Napier, NZ</td><td class="text-right"><strong>Bill To:</strong><br>{bill_to}</td></tr></table></td></tr>
-                <tr class="heading"><td>Description</td><td class="text-right">Amount (NZD)</td></tr>
-                {rows_html}
-                <tr class="total"><td></td><td class="text-right">Total Due: ${total_due:,.2f}</td></tr>
-            </table>
-        </div>
-    </body>
-    </html>
+    <html><head><style>body {{ font-family: Arial; padding: 20px; }} .invoice-box {{ max-width: 800px; margin: auto; border: 1px solid #eee; padding: 30px; }} table {{ width: 100%; }} .text-right {{ text-align: right; }} .item td {{ border-bottom: 1px solid #eee; }} .total td {{ border-top: 2px solid #eee; font-weight: bold; }}</style></head><body><div class="invoice-box"><table><tr><td><h1>INVOICE</h1></td><td class="text-right">#{invoice_no}<br>{invoice_date}</td></tr><tr><td><strong>FCO Management</strong></td><td class="text-right"><strong>Bill To:</strong><br>{bill_to}</td></tr>{rows_html}<tr class="total"><td></td><td class="text-right">Total: ${total_due:,.2f}</td></tr></table></div></body></html>
     """
 
-# --- E. AI 识别核心逻辑 (调试版) ---
+# --- E. AI 识别核心逻辑 (强力解析版) ---
 def real_extract_invoice_data(file_obj):
     try:
-        # 1. 检查 Key
         if not check_google_key():
-            print("DEBUG: API Key missing") # <--- 调试信息
-            return {"vendor_detected": "Error", "error": "API Key missing", "amount_detected": 0, "filename": file_obj.name}
+            return {"vendor_detected": "Error", "error_msg": "API Key missing", "amount_detected": 0, "filename": file_obj.name}
 
-        # 2. 初始化客户端
         client = genai.Client(api_key=st.secrets["google"]["api_key"])
         
-        # 3. 读取文件
         file_obj.seek(0)
         file_bytes = file_obj.read()
-        print(f"DEBUG: Read file {file_obj.name}, size: {len(file_bytes)} bytes") # <--- 调试信息
         
-        # 4. 构建 Prompt
         prompt_text = """
         Analyze this invoice PDF. Extract into JSON:
         1. "vendor_detected": Company name.
@@ -147,42 +103,39 @@ def real_extract_invoice_data(file_obj):
         Return ONLY valid JSON.
         """
         
-        # 5. 调用 AI
-        print("DEBUG: Sending request to Gemini...") # <--- 调试信息
         response = client.models.generate_content(
             model='gemini-1.5-flash',
-            contents=[
-                types.Content(
-                    parts=[
-                        types.Part.from_bytes(data=file_bytes, mime_type='application/pdf'),
-                        types.Part.from_text(text=prompt_text)
-                    ]
-                )
-            ]
+            contents=[types.Content(parts=[
+                types.Part.from_bytes(data=file_bytes, mime_type='application/pdf'),
+                types.Part.from_text(text=prompt_text)
+            ])]
         )
         
-        # 6. 打印 AI 原始回复 (关键！)
+        # --- 强力清洗逻辑 ---
         raw_text = response.text
-        print(f"DEBUG: Gemini Raw Response:\n{raw_text}") # <--- 这里最重要！看 AI 到底说了啥
+        # 使用正则表达式寻找被 {} 包裹的内容，忽略换行符
+        match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         
-        # 7. 解析结果
-        text_response = raw_text.strip()
-        if text_response.startswith("```"):
-            text_response = text_response.split("```")[1].strip()
-        if text_response.startswith("json"): 
-            text_response = text_response[4:].strip()
-        
-        data = json.loads(text_response)
-        data['filename'] = file_obj.name
-        return data
+        if match:
+            json_str = match.group(0)
+            data = json.loads(json_str)
+            data['filename'] = file_obj.name
+            # 确保没有字段遗漏
+            if "amount_detected" not in data: data["amount_detected"] = 0.0
+            if "invoice_no" not in data: data["invoice_no"] = "Unknown"
+            return data
+        else:
+            return {
+                "filename": file_obj.name,
+                "vendor_detected": "Error", 
+                "error_msg": f"No JSON found in AI response. Raw: {raw_text[:100]}...",
+                "amount_detected": 0.0
+            }
 
     except Exception as e:
-        print(f"DEBUG: Error occurred: {str(e)}") # <--- 打印具体报错
         return {
             "filename": file_obj.name,
             "vendor_detected": "Error", 
-            "invoice_no": "Error",
-            "date_detected": "",
-            "amount_detected": 0.0,
-            "error": str(e)
+            "error_msg": str(e),
+            "amount_detected": 0.0
         }
