@@ -91,9 +91,15 @@ def real_extract_invoice_data(file_obj):
         # 1. 配置 (这是最稳健的写法)
         genai.configure(api_key=st.secrets["google"]["api_key"])
         
-        # 2. 选择模型 (改用 flash-latest 或者 flash-001)
-        # 如果 flash 依然报错，请尝试 'gemini-pro' (处理纯文本) 或 'gemini-1.5-flash-latest'
-        model = genai.GenerativeModel('gemini-1.5-flash') 
+       # --- 修改开始 ---
+        # 尝试使用更具体的模型名称，这通常能解决 404 错误
+        # 备选方案: 'gemini-1.5-flash-001' 或 'gemini-1.5-flash-latest'
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash-latest') 
+        except:
+            # 如果 Flash 依然失败，回退到 Pro (成本稍高但兼容性最好)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+        # --- 修改结束 ---
         
         # 3. 读取文件
         file_obj.seek(0)
@@ -149,3 +155,10 @@ def real_extract_invoice_data(file_obj):
             "error_msg": str(e),
             "amount_detected": 0.0
         }
+
+# 在 backend.py 添加这个调试函数
+def list_available_models():
+    genai.configure(api_key=st.secrets["google"]["api_key"])
+    for m in genai.list_models():
+        if 'generateContent' in m.supported_generation_methods:
+            print(m.name) # 这会在 Streamlit 的后台 Logs 里打印出来的模型列表
