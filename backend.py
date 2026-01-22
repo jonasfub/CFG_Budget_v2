@@ -94,7 +94,7 @@ def real_extract_invoice_data(file_obj):
        # --- 修改开始 ---
         # 尝试使用具体版本号，兼容性更好
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            model = genai.GenerativeModel('gemini-1.5-flash')
         except:
             # 如果失败，尝试回退到 standard flash 或 pro
             model = genai.GenerativeModel('gemini-1.5-flash-001')
