@@ -437,3 +437,44 @@ def view_invoice_bot():
                 }, width="stretch", hide_index=True)
             else: st.info("No archives.")
         except: st.error("Error loading archive.")
+
+
+# --- 在 views.py 文件末尾添加 ---
+
+def view_debug_models():
+    st.title("🛠️ Google Model Debugger")
+    
+    # 检查 Key 是否存在
+    if "google" not in st.secrets or "api_key" not in st.secrets["google"]:
+        st.error("❌ Google API Key not found in secrets!")
+        return
+
+    import google.generativeai as genai
+    genai.configure(api_key=st.secrets["google"]["api_key"])
+    
+    st.write("正在连接 Google 服务器查询可用模型...")
+    
+    try:
+        # 获取所有模型
+        models = list(genai.list_models())
+        
+        # 筛选出生成式模型 (排除掉 embedding 模型等)
+        chat_models = [m for m in models if 'generateContent' in m.supported_generation_methods]
+        
+        st.success(f"✅ 连接成功！共找到 {len(chat_models)} 个可用生成模型：")
+        
+        # 显示列表
+        model_data = []
+        for m in chat_models:
+            model_data.append({
+                "Model Name (Use this in code)": m.name,
+                "Display Name": m.display_name,
+                "Version": m.version
+            })
+            
+        st.dataframe(pd.DataFrame(model_data), use_container_width=True)
+        
+        st.info("💡 请复制 'Model Name' 列的值（例如 `models/gemini-2.5-flash`），并将其填入 backend.py 的代码中。")
+        
+    except Exception as e:
+        st.error(f"❌ 连接失败: {str(e)}")

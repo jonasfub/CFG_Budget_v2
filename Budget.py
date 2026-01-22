@@ -25,7 +25,8 @@ pages = {
     "2. Budget Planning": lambda: views.view_monthly_input("Budget"),
     "3. Actuals Entry": lambda: views.view_monthly_input("Actual"),
     "4. Analysis & Invoice": views.view_analysis_invoice,
-    "5. 3rd Party Invoice Check": views.view_invoice_bot
+    "5. 3rd Party Invoice Check": views.view_invoice_bot,
+    "6. 🛠️ DEBUG MODELS": views.view_debug_models
 }
 
 # 4. 渲染导航栏
