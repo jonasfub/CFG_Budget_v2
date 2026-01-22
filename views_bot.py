@@ -63,18 +63,26 @@ def view_invoice_bot():
                 if item.get("vendor_detected") == "Error":
                     match_status = "❌ AI Error"
                 else:
-                    # Database Match
-                    acts = backend.supabase.table("dim_cost_activities").select("id").ilike("activity_name", f"%{item['vendor_detected']}%").execute().data
-                    if acts:
-                        act_id = acts[0]['id']
-                        costs = backend.supabase.table("fact_operational_costs").select("total_amount")\
-                            .eq("activity_id", act_id).eq("record_type", "Actual").execute().data
-                        
-                        if costs:
-                            db_amount = float(costs[0]['total_amount'])
-                            diff = float(item['amount_detected']) - db_amount
-                            if abs(diff) < 1.0: match_status = "✅ Match"
-                            else: match_status = "⚠️ Variance"
+                    # --- [关键修改] 增加 try-except 异常捕获 ---
+                    try:
+                        # Database Match
+                        acts = backend.supabase.table("dim_cost_activities").select("id").ilike("activity_name", f"%{item['vendor_detected']}%").execute().data
+                        if acts:
+                            act_id = acts[0]['id']
+                            costs = backend.supabase.table("fact_operational_costs").select("total_amount")\
+                                .eq("activity_id", act_id).eq("record_type", "Actual").execute().data
+                            
+                            if costs:
+                                db_amount = float(costs[0]['total_amount'])
+                                diff = float(item['amount_detected']) - db_amount
+                                if abs(diff) < 1.0: match_status = "✅ Match"
+                                else: match_status = "⚠️ Variance"
+                    except Exception as e:
+                        # 如果数据库请求失败，记录错误但不崩溃
+                        match_status = "⚠️ Net Error"
+                        # 可选：在后台打印错误信息
+                        print(f"Supabase connection error for {item.get('filename')}: {e}")
+                    # ----------------------------------------
 
                 reconcile_data.append({
                     "Select": False, "Index": i,
@@ -90,15 +98,11 @@ def view_invoice_bot():
             df_rec = pd.DataFrame(reconcile_data)
             
             if not df_rec.empty:
-                # --- [关键修复] 类型强制转换 ---
-                # 将 Date 列转换为 datetime 对象，无法转换的变为 NaT (空值)，防止报错
+                # 类型转换，防止 date_editor 报错
                 df_rec["Date"] = pd.to_datetime(df_rec["Date"], errors='coerce')
-                
-                # 确保数值列是浮点数
                 df_rec["Inv Amount"] = df_rec["Inv Amount"].astype(float)
                 df_rec["ERP Amount"] = df_rec["ERP Amount"].astype(float)
                 df_rec["Diff"] = df_rec["Diff"].astype(float)
-                # ----------------------------
 
                 edited_df = st.data_editor(
                     df_rec, 
@@ -133,7 +137,7 @@ def view_invoice_bot():
                                 backend.supabase.table("invoice_archive").insert({
                                     "invoice_no": row['Inv #'], 
                                     "vendor": row['Vendor'], 
-                                    "invoice_date": str(row['Date'].date()) if pd.notnull(row['Date']) else None, # 保存时转回字符串
+                                    "invoice_date": str(row['Date'].date()) if pd.notnull(row['Date']) else None,
                                     "description": row['Desc'],        
                                     "amount": row['Inv Amount'],
                                     "file_name": row['File'], 
@@ -158,7 +162,6 @@ def view_invoice_bot():
             res = query.execute().data
             if res:
                 df_archive = pd.DataFrame(res)
-                # Archive 表里的日期也需要转换，否则显示会不一致
                 if "invoice_date" in df_archive.columns:
                      df_archive["invoice_date"] = pd.to_datetime(df_archive["invoice_date"], errors='coerce')
 
