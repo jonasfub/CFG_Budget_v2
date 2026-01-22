@@ -4,3 +4,4 @@ supabase
 requests
 xlsxwriter
 plotly
+google-generativeai
