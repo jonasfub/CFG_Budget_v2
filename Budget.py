@@ -419,60 +419,196 @@ def page_analysis_invoice():
         st.download_button("⬇️ Download HTML", invoice_html, file_name=f"{invoice_no}.html", mime="text/html")
 
 # --- 页面 5: Invoice Bot (已整合) ---
+
+# --- 升级版: 页面 5: Invoice Bot (含存储与归档功能) ---
 def page_invoice_bot():
-    st.title("🤖 3rd Party Invoice Reconciliation Bot")
-    st.caption("Upload contractor invoices (PDF) to verify against Actual Costs in ERP.")
+    st.title("🤖 Invoice Bot (Audit & Archive)")
+    st.caption("Flow: Upload -> AI Check -> Reconcile -> Archive to Cloud Storage")
 
-    col_upload, col_review = st.columns([1, 2])
-    with col_upload:
-        uploaded_files = st.file_uploader("Drag PDFs here", type=["pdf"], accept_multiple_files=True)
-        if uploaded_files:
-            if st.button("🚀 Start AI Analysis"):
-                results = []
-                progress_bar = st.progress(0)
-                for i, file in enumerate(uploaded_files):
-                    time.sleep(0.5) # Mock processing
-                    # Mock logic
-                    vendor = "Unknown"
-                    if "Road" in file.name: vendor = "Road Maintenance"
-                    elif "Harv" in file.name: vendor = "Groundbase Harvesting"
-                    elif "Truck" in file.name: vendor = "Cartage"
-                    
-                    amount = random.randint(1000, 20000)
-                    results.append({
-                        "filename": file.name, "vendor_detected": vendor,
-                        "invoice_no": f"INV-{random.randint(10000,99999)}",
-                        "amount_detected": float(amount)
-                    })
-                    progress_bar.progress((i + 1) / len(uploaded_files))
-                st.session_state['ocr_results'] = results
-                st.success("Analysis Complete!")
+    # 分页：一个是录入复核，一个是历史查询
+    tab_audit, tab_archive = st.tabs(["🚀 Upload & Audit", "🗄️ Invoice Archive"])
 
-    with col_review:
-        if 'ocr_results' in st.session_state:
-            results = st.session_state['ocr_results']
-            reconcile_data = []
-            for item in results:
-                match_status = "❌ Not Found"
-                db_amount = 0
-                diff = 0
-                if supabase:
-                    acts = supabase.table("dim_cost_activities").select("id").ilike("activity_name", f"%{item['vendor_detected']}%").execute().data
-                    if acts:
-                        act_id = acts[0]['id']
-                        costs = supabase.table("fact_operational_costs").select("total_amount")\
-                            .eq("activity_id", act_id).eq("month", "2025-01-01").eq("record_type", "Actual").execute().data
-                        if costs:
-                            db_amount = costs[0]['total_amount']
-                            diff = item['amount_detected'] - db_amount
-                            match_status = "✅ Match" if abs(diff) < 1.0 else "⚠️ Variance"
-                
-                reconcile_data.append({
-                    "File": item['filename'], "Vendor": item['vendor_detected'],
-                    "Inv Amt": item['amount_detected'], "ERP Amt": db_amount, "Diff": diff, "Status": match_status
-                })
+    # --- Tab 1: 上传与复核 ---
+    with tab_audit:
+        col_upload, col_review = st.columns([1, 2])
+        
+        with col_upload:
+            st.subheader("1. Upload")
+            uploaded_files = st.file_uploader("Drag PDFs here", type=["pdf"], accept_multiple_files=True)
             
-            st.dataframe(pd.DataFrame(reconcile_data), use_container_width=True)
+            if uploaded_files:
+                if st.button("🚀 Start Analysis"):
+                    results = []
+                    progress_bar = st.progress(0)
+                    for i, file in enumerate(uploaded_files):
+                        time.sleep(0.5) # Mock AI speed
+                        
+                        # Mock AI Logic
+                        vendor = "Unknown"
+                        if "Road" in file.name: vendor = "Road Maintenance"
+                        elif "Harv" in file.name: vendor = "Groundbase Harvesting"
+                        elif "Truck" in file.name: vendor = "Cartage"
+                        
+                        amount = random.randint(1000, 20000)
+                        
+                        # 将文件对象本身暂存，以便后续上传
+                        results.append({
+                            "file_obj": file, 
+                            "filename": file.name, 
+                            "vendor_detected": vendor,
+                            "invoice_no": f"INV-{random.randint(10000,99999)}",
+                            "date_detected": str(date.today()),
+                            "amount_detected": float(amount)
+                        })
+                        progress_bar.progress((i + 1) / len(uploaded_files))
+                    
+                    st.session_state['ocr_results'] = results
+                    st.success(f"Analyzed {len(results)} invoices.")
+
+        with col_review:
+            st.subheader("2. Review & Archive")
+            
+            if 'ocr_results' in st.session_state:
+                results = st.session_state['ocr_results']
+                reconcile_data = []
+                
+                # 准备展示数据
+                for i, item in enumerate(results):
+                    # 复核逻辑
+                    match_status = "❌ Not Found"
+                    db_amount = 0
+                    diff = 0
+                    if supabase:
+                        acts = supabase.table("dim_cost_activities").select("id").ilike("activity_name", f"%{item['vendor_detected']}%").execute().data
+                        if acts:
+                            act_id = acts[0]['id']
+                            costs = supabase.table("fact_operational_costs").select("total_amount")\
+                                .eq("activity_id", act_id).eq("month", "2025-01-01").eq("record_type", "Actual").execute().data
+                            if costs:
+                                db_amount = costs[0]['total_amount']
+                                diff = item['amount_detected'] - db_amount
+                                match_status = "✅ Match" if abs(diff) < 1.0 else "⚠️ Variance"
+                    
+                    # 存入列表供展示
+                    reconcile_data.append({
+                        "Select": False, # 用于勾选
+                        "Index": i,
+                        "File": item['filename'], 
+                        "Vendor": item['vendor_detected'],
+                        "Inv #": item['invoice_no'],
+                        "Inv Amount": item['amount_detected'], 
+                        "ERP Amount": db_amount, 
+                        "Diff": diff, 
+                        "Status": match_status
+                    })
+                
+                # 使用 Data Editor 允许用户勾选要归档的发票
+                df_rec = pd.DataFrame(reconcile_data)
+                
+                st.info("Check the boxes below for invoices you want to approve and store in the cloud.")
+                edited_df = st.data_editor(
+                    df_rec, 
+                    column_config={
+                        "Select": st.column_config.CheckboxColumn("Archive?", default=True),
+                        "Index": None # 隐藏索引列
+                    },
+                    disabled=["File", "Vendor", "Inv #", "Inv Amount", "ERP Amount", "Diff", "Status"],
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+                # --- 核心：保存到云端 ---
+                if st.button("💾 Confirm & Save Selected to Cloud"):
+                    success_count = 0
+                    progress_save = st.progress(0)
+                    
+                    selected_rows = edited_df[edited_df["Select"] == True]
+                    total_files = len(selected_rows)
+                    
+                    if total_files == 0:
+                        st.warning("No invoices selected.")
+                    else:
+                        for idx, row in selected_rows.iterrows():
+                            original_index = row['Index']
+                            item_data = results[original_index]
+                            file_obj = item_data['file_obj']
+                            
+                            try:
+                                # 1. 上传文件到 Supabase Storage
+                                # 生成唯一文件名防止覆盖: timestamp_filename
+                                file_path = f"{int(time.time())}_{item_data['filename']}"
+                                file_obj.seek(0) # 重置文件指针
+                                file_content = file_obj.read()
+                                
+                                supabase.storage.from_("invoices").upload(
+                                    path=file_path, 
+                                    file=file_content, 
+                                    file_options={"content-type": "application/pdf"}
+                                )
+                                
+                                # 2. 获取公开访问链接
+                                public_url = supabase.storage.from_("invoices").get_public_url(file_path)
+                                
+                                # 3. 写入数据库 archive 表
+                                record = {
+                                    "invoice_no": item_data['invoice_no'],
+                                    "vendor": item_data['vendor_detected'],
+                                    "amount": item_data['amount_detected'],
+                                    "date_on_invoice": item_data['date_detected'],
+                                    "file_name": item_data['filename'],
+                                    "file_url": public_url,
+                                    "status": "Verified" if "Match" in row['Status'] else "Manual Check"
+                                }
+                                supabase.table("invoice_archive").insert(record).execute()
+                                success_count += 1
+                                
+                            except Exception as e:
+                                st.error(f"Failed to save {item_data['filename']}: {e}")
+                            
+                            progress_save.progress((success_count) / total_files)
+                        
+                        if success_count > 0:
+                            st.success(f"🎉 Successfully archived {success_count} invoices! Check 'Invoice Archive' tab.")
+                            # 清空 session state 以重置 (可选)
+                            # del st.session_state['ocr_results'] 
+
+    # --- Tab 2: 历史档案查询 ---
+    with tab_archive:
+        st.subheader("🗄️ Invoice Digital Cabinet")
+        
+        # 搜索栏
+        col_search, _ = st.columns([1, 2])
+        with col_search:
+            search_vendor = st.text_input("Search Vendor / Invoice #", placeholder="Type to filter...")
+        
+        # 拉取数据
+        try:
+            query = supabase.table("invoice_archive").select("*").order("created_at", desc=True)
+            if search_vendor:
+                # 简单的模糊搜索
+                query = query.or_(f"vendor.ilike.%{search_vendor}%,invoice_no.ilike.%{search_vendor}%")
+            
+            res = query.execute().data
+            df_archive = pd.DataFrame(res)
+            
+            if not df_archive.empty:
+                # 格式化显示
+                st.dataframe(
+                    df_archive,
+                    column_config={
+                        "file_url": st.column_config.LinkColumn("PDF Link", display_text="Download PDF"),
+                        "created_at": st.column_config.DatetimeColumn("Archived Date", format="YYYY-MM-DD HH:mm"),
+                        "amount": st.column_config.NumberColumn("Amount", format="$%.2f")
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("No archived invoices found.")
+                
+        except Exception as e:
+            st.error("Connecting to archive database...")
+
 
 # --- 主导航 ---
 st.sidebar.title("🌲 FCO Cloud ERP")
