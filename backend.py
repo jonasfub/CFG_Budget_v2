@@ -83,59 +83,75 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
     """
 
 # --- E. AI 识别核心逻辑 (稳定兼容版) ---
+# --- 替换 backend.py 中的 real_extract_invoice_data 函数 ---
+
 def real_extract_invoice_data(file_obj):
     try:
         if not check_google_key():
             return {"vendor_detected": "Error", "error_msg": "API Key missing", "amount_detected": 0, "filename": file_obj.name}
 
-        # 1. 配置 (这是最稳健的写法)
+        # 1. 配置
         genai.configure(api_key=st.secrets["google"]["api_key"])
         
-       # 2. 选择模型 (关键修改)
-        # 2026年请使用 gemini-2.5-flash 或 gemini-2.0-flash
+        # 2. 选择模型 (使用最新版)
         try:
             model = genai.GenerativeModel('gemini-2.5-flash') 
         except:
-            # 如果 2.5 还没在你的区域完全部署，尝试 2.0
             model = genai.GenerativeModel('gemini-2.0-flash')
-
-        # --- 修改结束 ---
         
         # 3. 读取文件
         file_obj.seek(0)
         file_bytes = file_obj.read()
         
-        # 4. 构建 Prompt
+        # 4. 构建 Prompt (稍微加强一点约束)
         prompt_text = """
-        Analyze this invoice PDF. Extract into JSON:
-        1. "vendor_detected": Company name.
-        2. "invoice_no": Invoice number.
-        3. "date_detected": YYYY-MM-DD.
-        4. "amount_detected": Total numeric amount (float).
-        
-        Important: Return ONLY the JSON object. No markdown.
+        Analyze this invoice PDF. Extract the MAIN invoice into a SINGLE JSON object:
+        {
+            "vendor_detected": "Company Name",
+            "invoice_no": "Invoice Number",
+            "date_detected": "YYYY-MM-DD",
+            "amount_detected": 1234.56
+        }
+        If there are multiple invoices, ONLY extract the first one.
+        Return ONLY the JSON. No markdown formatting.
         """
         
-        # 5. 调用生成 (parts 列表写法)
+        # 5. 调用生成
         response = model.generate_content([
             {'mime_type': 'application/pdf', 'data': file_bytes},
             prompt_text
         ])
         
-        # 6. 解析
+        # 6. 解析 (增强版：处理 Extra data 问题)
         raw_text = response.text
+        
+        # 尝试提取第一个 JSON 块
         match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         
         if match:
             json_str = match.group(0)
-            data = json.loads(json_str)
+            try:
+                # 尝试直接解析
+                data = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                # 关键修复：如果报错 "Extra data"，说明后面还有内容
+                # 我们利用错误信息里的位置 (e.pos) 来截断字符串，只取前面合法的部分
+                if "Extra data" in e.msg:
+                    try:
+                        data = json.loads(json_str[:e.pos])
+                    except:
+                        return {"filename": file_obj.name, "vendor_detected": "Error", "error_msg": "JSON Parse Error (Truncated)", "amount_detected": 0}
+                else:
+                    return {"filename": file_obj.name, "vendor_detected": "Error", "error_msg": str(e), "amount_detected": 0}
+
+            # 成功解析后的数据清洗
             data['filename'] = file_obj.name
-            # 容错处理
             if "amount_detected" not in data: data["amount_detected"] = 0.0
             if "invoice_no" not in data: data["invoice_no"] = "Unknown"
+            
+            # 格式化金额
             if isinstance(data["amount_detected"], str):
-                # 尝试把 "$1,234.56" 变成 float
-                clean_amt = data["amount_detected"].replace('$','').replace(',','')
+                clean_amt = data["amount_detected"].replace('$','').replace(',','').strip()
                 try: data["amount_detected"] = float(clean_amt)
                 except: data["amount_detected"] = 0.0
             
@@ -144,7 +160,7 @@ def real_extract_invoice_data(file_obj):
             return {
                 "filename": file_obj.name,
                 "vendor_detected": "Error", 
-                "error_msg": f"No JSON. Raw: {raw_text[:50]}...",
+                "error_msg": f"No JSON found. Raw: {raw_text[:50]}...",
                 "amount_detected": 0.0
             }
 
@@ -156,7 +172,8 @@ def real_extract_invoice_data(file_obj):
             "amount_detected": 0.0
         }
 
-# 在 backend.py 添加这个调试函数
+
+# --- F 在 backend.py 添加这个调试函数
 def list_available_models():
     genai.configure(api_key=st.secrets["google"]["api_key"])
     for m in genai.list_models():
