@@ -91,13 +91,13 @@ def real_extract_invoice_data(file_obj):
         # 1. 配置 (这是最稳健的写法)
         genai.configure(api_key=st.secrets["google"]["api_key"])
         
-       # --- 修改开始 ---
-        # 尝试使用具体版本号，兼容性更好
+       # 2. 选择模型 (关键修改)
+        # 2026年请使用 gemini-2.5-flash 或 gemini-2.0-flash
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash') 
         except:
-            # 如果失败，尝试回退到 standard flash 或 pro
-            model = genai.GenerativeModel('gemini-1.5-flash-001')
+            # 如果 2.5 还没在你的区域完全部署，尝试 2.0
+            model = genai.GenerativeModel('gemini-2.0-flash')
 
         # --- 修改结束 ---
         

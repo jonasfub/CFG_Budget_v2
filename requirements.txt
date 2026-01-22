@@ -4,4 +4,4 @@ supabase
 requests
 xlsxwriter
 plotly
-google-generativeai>=0.7.0
+google-generativeai>=0.8.3
