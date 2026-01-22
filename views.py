@@ -332,19 +332,26 @@ def view_invoice_bot():
             
             if uploaded_files:
                 if st.button("🚀 Start AI Analysis", type="primary"):
-                    results = []
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    total_files = len(uploaded_files)
-                    
-                    for i, file in enumerate(uploaded_files):
-                        status_text.markdown(f"**Analyzing {i+1}/{total_files}:** `{file.name}`...")
-                        
-                        data = backend.real_extract_invoice_data(file)
-                        data['file_obj'] = file
-                        results.append(data)
-                        
-                        progress_bar.progress((i + 1) / total_files)
+                results = []
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                total_files = len(uploaded_files)
+    
+                for i, file in enumerate(uploaded_files):
+                status_text.markdown(f"**Analyzing {i+1}/{total_files}:** `{file.name}`...")
+        
+        # 调用后端，现在返回的是一个列表 data_list
+        data_list = backend.real_extract_invoice_data(file)
+        
+        # 必须要把 file_obj 塞回去，否则后续保存功能会找不到文件流
+        for item in data_list:
+            item['file_obj'] = file
+        
+        # 使用 extend 而不是 append，把多个发票拍平放进总结果里
+        results.extend(data_list)
+        
+        progress_bar.progress((i + 1) / total_files)
+
                     
                     progress_bar.progress(100)
                     status_text.success("✅ Analysis Complete!")

@@ -88,92 +88,103 @@ def generate_invoice_html(invoice_no, invoice_date, bill_to, month_str, year, it
 def real_extract_invoice_data(file_obj):
     try:
         if not check_google_key():
-            return {"vendor_detected": "Error", "error_msg": "API Key missing", "amount_detected": 0, "filename": file_obj.name}
+            # 为了兼容列表格式，这里返回由一个错误对象组成的列表
+            return [{"vendor_detected": "Error", "error_msg": "API Key missing", "amount_detected": 0, "filename": file_obj.name}]
 
-        # 1. 配置
+        # 1. 配置 & 模型选择
         genai.configure(api_key=st.secrets["google"]["api_key"])
-        
-        # 2. 选择模型 (使用最新版)
         try:
             model = genai.GenerativeModel('gemini-2.5-flash') 
         except:
             model = genai.GenerativeModel('gemini-2.0-flash')
         
-        # 3. 读取文件
+        # 2. 读取文件
         file_obj.seek(0)
         file_bytes = file_obj.read()
         
-        # 4. 构建 Prompt (稍微加强一点约束)
+        # 3. 构建 Prompt (关键修改：要求返回数组 Array)
         prompt_text = """
-        Analyze this invoice PDF. Extract the MAIN invoice into a SINGLE JSON object:
-        {
-            "vendor_detected": "Company Name",
-            "invoice_no": "Invoice Number",
-            "date_detected": "YYYY-MM-DD",
-            "amount_detected": 1234.56
-        }
-        If there are multiple invoices, ONLY extract the first one.
-        Return ONLY the JSON. No markdown formatting.
+        Analyze this PDF file. It contains MULTIPLE distinct invoices (potentially on different pages).
+        Extract ALL invoices found into a single JSON ARRAY.
+        
+        Output format must be a list of objects:
+        [
+            {
+                "vendor_detected": "Company A",
+                "invoice_no": "INV-001",
+                "date_detected": "2025-12-22",
+                "amount_detected": 1000.00
+            },
+            {
+                "vendor_detected": "Company B",
+                "invoice_no": "INV-002",
+                "date_detected": "2025-12-30",
+                "amount_detected": 500.50
+            }
+        ]
+        
+        Important:
+        1. Scan ALL pages.
+        2. Return ONLY the JSON ARRAY. No markdown code blocks.
         """
         
-        # 5. 调用生成
+        # 4. 调用 AI
         response = model.generate_content([
             {'mime_type': 'application/pdf', 'data': file_bytes},
             prompt_text
         ])
         
-        # 6. 解析 (增强版：处理 Extra data 问题)
+        # 5. 解析结果
         raw_text = response.text
         
-        # 尝试提取第一个 JSON 块
-        match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        # 关键修改：寻找方括号 [] 包裹的内容，而不是花括号 {}
+        match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+        
+        final_results = []
         
         if match:
             json_str = match.group(0)
             try:
-                # 尝试直接解析
-                data = json.loads(json_str)
-            except json.JSONDecodeError as e:
-                # 关键修复：如果报错 "Extra data"，说明后面还有内容
-                # 我们利用错误信息里的位置 (e.pos) 来截断字符串，只取前面合法的部分
-                if "Extra data" in e.msg:
-                    try:
-                        data = json.loads(json_str[:e.pos])
-                    except:
-                        return {"filename": file_obj.name, "vendor_detected": "Error", "error_msg": "JSON Parse Error (Truncated)", "amount_detected": 0}
-                else:
-                    return {"filename": file_obj.name, "vendor_detected": "Error", "error_msg": str(e), "amount_detected": 0}
-
-            # 成功解析后的数据清洗
-            data['filename'] = file_obj.name
-            if "amount_detected" not in data: data["amount_detected"] = 0.0
-            if "invoice_no" not in data: data["invoice_no"] = "Unknown"
-            
-            # 格式化金额
-            if isinstance(data["amount_detected"], str):
-                clean_amt = data["amount_detected"].replace('$','').replace(',','').strip()
-                try: data["amount_detected"] = float(clean_amt)
-                except: data["amount_detected"] = 0.0
-            
-            return data
+                data_list = json.loads(json_str)
+                
+                # 如果 AI 依然只返回了一个字典对象而不是列表，手动包一层
+                if isinstance(data_list, dict):
+                    data_list = [data_list]
+                    
+                # 遍历列表，清洗每一个发票的数据
+                for item in data_list:
+                    # 确保是字典
+                    if not isinstance(item, dict): continue
+                    
+                    item['filename'] = file_obj.name # 标记来源文件
+                    
+                    # 容错处理
+                    if "amount_detected" not in item: item["amount_detected"] = 0.0
+                    if "invoice_no" not in item: item["invoice_no"] = "Unknown"
+                    if "vendor_detected" not in item: item["vendor_detected"] = "Unknown"
+                    
+                    # 金额转 Float
+                    if isinstance(item["amount_detected"], str):
+                        clean_amt = item["amount_detected"].replace('$','').replace(',','').strip()
+                        try: item["amount_detected"] = float(clean_amt)
+                        except: item["amount_detected"] = 0.0
+                    
+                    final_results.append(item)
+                    
+                return final_results
+                
+            except json.JSONDecodeError:
+                return [{"filename": file_obj.name, "vendor_detected": "Error", "error_msg": "JSON Parse Error", "amount_detected": 0}]
         else:
-            return {
-                "filename": file_obj.name,
-                "vendor_detected": "Error", 
-                "error_msg": f"No JSON found. Raw: {raw_text[:50]}...",
-                "amount_detected": 0.0
-            }
+            return [{"filename": file_obj.name, "vendor_detected": "Error", "error_msg": "No JSON Array found", "amount_detected": 0}]
 
     except Exception as e:
-        return {
-            "filename": file_obj.name,
-            "vendor_detected": "Error", 
-            "error_msg": str(e),
-            "amount_detected": 0.0
-        }
+        return [{"filename": file_obj.name, "vendor_detected": "Error", "error_msg": str(e), "amount_detected": 0}]
+
 
 
 # --- F 在 backend.py 添加这个调试函数
+
 def list_available_models():
     genai.configure(api_key=st.secrets["google"]["api_key"])
     for m in genai.list_models():
